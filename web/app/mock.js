@@ -10,11 +10,14 @@ const BOB = oid();
 const CAROL = oid();
 
 const script = (send) => [
-  [0, { type: 'hello', head: CAROL, anchoredAt: '今天 08:00', peers: [
-    { name: 'origin', url: 'git@node-a', ok: true },
-    { name: 'mirror', url: 'git@node-b', ok: true },
-    { name: 'alice 的机器', url: 'http://10.0.0.7:8081', ok: true },
-  ] }],
+  [0, { type: 'hello', head: CAROL, anchoredAt: '今天 08:00',
+    // 演示模式没有真的签名密钥 —— 如实标为未签名，不粉饰
+    identity: { signed: false },
+    peers: [
+      { name: 'origin', url: 'git@node-a', ok: true },
+      { name: 'mirror', url: 'git@node-b', ok: true },
+      { name: 'alice 的机器', url: 'http://10.0.0.7:8081', ok: false, note: '与本机见证锚不一致' },
+    ] }],
 
   [300, { type: 'msg', oid: GENESIS, seq: 1, author: 'alice', body: '建好了，这条是创世提交。' }],
 
