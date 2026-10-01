@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/resilience.mjs —— 依赖挂掉时前端还活不活得下去。
 //
 // 这个项目宣称「零依赖单二进制」，但那说的是后端。前端目前仍从 CDN 取

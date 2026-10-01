@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/layout.mjs —— 几何实测：横向溢出、越界裁剪、内容贴边、触摸目标。
 // 直接冲着「安全区 / 碰到边界 / 移动端适配」这个问题写的。
 

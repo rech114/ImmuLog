@@ -1,0 +1,22 @@
+ImmuLog
+Copyright (c) 2026 ImmuLog contributors
+https://github.com/Maicy0609/ImmuLog
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+
+Third-party components
+----------------------
+
+**Runtime dependencies of this work: none.**
+The Go module has no third-party imports (`go.sum` does not exist).
+
+**git** — this program invokes the `git` binary as a *separate process*
+(`os/exec`), it does not link or embed any Git code. Git is GPL-2.0; running a
+GPL program as a subprocess does not make this work a derivative of it. Git is
+not distributed with this work.
+
+**Beer CSS** (MIT) and the web fonts (SIL Open Font License 1.1) are currently
+loaded from a CDN at runtime, so they are not part of this distribution.
+Before any release that vendors them into `web/`, their license texts must be
+carried along — see docs/DESIGN.md §8.8.

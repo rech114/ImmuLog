@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // lib/harness.mjs —— 浏览器检查的公共部件：静态服务、视口常量、断言收集。
 // 只被 check/*.mjs 使用；不引入 @playwright/test。
 

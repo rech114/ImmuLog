@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // guard.go —— 后台巡检：完整性、多源同步、外部锚定。
 //

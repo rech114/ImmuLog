@@ -2,12 +2,10 @@
 
 ## 许可与 DCO
 
-本项目采用**分层许可**，每个源文件顶部的 `SPDX-License-Identifier` 就是权威声明：
+**全部代码使用 Apache License 2.0**（见 `LICENSE`），第三方组件声明见 `NOTICE`。
+每个源文件顶部的 `SPDX-License-Identifier: Apache-2.0` 就是权威声明。
 
-| 目录 | 许可 |
-|---|---|
-| `core/` | **Apache-2.0** |
-| `internal/web/` · `main.go` · `web/` | **AGPL-3.0-or-later** |
+### 提交必须签署 DCO
 
 提交必须签署 [Developer Certificate of Origin](DCO)（DCO 1.1）：
 

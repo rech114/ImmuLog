@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/shapes.mjs —— 视觉语汇真的渲染出来了吗。
 //
 // 两件事都容易静默失效：

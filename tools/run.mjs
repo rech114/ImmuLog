@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // run.mjs —— 串行跑全部浏览器检查，汇总成 report.json，产物供 CI 回传。
 //
 // 串行是有意的：总共 5 个检查、约 40 秒，并发只会引入 flake，换不来任何东西。

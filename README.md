@@ -144,9 +144,9 @@ git for-each-ref --format='%(refname)%1f%(objectname)' refs/feeds/
 ```
 immulog/
 ├── go.mod                  零第三方依赖（没有 go.sum）
-├── main.go                 组装与生命周期                    [AGPL-3.0]
+├── main.go                 组装与生命周期
 ├── docs/DESIGN.md
-├── core/                   ← 可用作库，Apache-2.0
+├── core/                   ← 可被外部导入的库
 │   ├── gitx/               唯一允许出现 os/exec 的包
 │   │   ├── exec.go         子进程边界：stdin 注入、超时、错误归一、Init
 │   │   ├── object.go       commit-tree / hash-object / log / trailer 读取
@@ -159,11 +159,11 @@ immulog/
 │       ├── snapshot.go     快照摘要与分裂视图判定
 │       ├── sync.go         多源同步：隔离区 → 校验 → 快进
 │       └── anchor.go       锚定链与外部锚定接口
-├── internal/web/           传输                            [AGPL-3.0]
+├── internal/web/           传输
 │   ├── http.go             路由与处理器（net/http）
 │   ├── sse.go              EventSource 流（零依赖）
 │   └── guard.go            后台循环：巡检 / 同步 / 锚定
-└── web/                    前端，//go:embed                [AGPL-3.0]
+└── web/                    前端，//go:embed
     ├── index.html
     ├── style.css
     └── app/                main / stream / api / store / render / mock
@@ -179,16 +179,19 @@ immulog/
 
 ## 许可
 
-**分层许可**，每个源文件顶部的 `SPDX-License-Identifier` 是权威声明：
+**Apache License 2.0** —— 见 [LICENSE](LICENSE)，第三方组件声明见 [NOTICE](NOTICE)。
 
-| 目录 | 许可 | 为什么 |
-|---|---|---|
-| `core/` | **Apache-2.0** | 它是通用库：把 git 仓库变成可验证的消息日志。想让任何人都能**不用问**就用它 |
-| `main.go` · `internal/web/` · `web/` | **AGPL-3.0-or-later** | 跑起来的那部分。想让任何把它**当网络服务运营**的人保持开源 |
+整个仓库（`core/` 库 + 服务端 + 前端）统一使用 Apache-2.0。
 
-⚠️ **一个不能说含糊的事实**：默认构建出的二进制同时链接了两半，
-所以**分发这个二进制 = 分发 AGPL-3.0 作品**。Apache 的部分只对
-「只想拿核心、不碰服务端」的第三方有意义 —— 而那恰好是最有价值的一种复用。
+`core/` 刻意不在 `internal/` 下 —— Go 禁止导入 `internal/`。
+一个可复用的库应该真的能被 `go get`，而不是只在文档里叫「核心」。
+
+> **一个明确接受的代价**：Apache-2.0 **不要求回馈改进**。
+> 有人可以拿走这份代码、改进它、闭源、甚至当服务对外提供，且无需回馈一行。
+> 这是选择宽松许可时**主动接受的**，不是疏忽。
+>
+> 对这个项目尤其无所谓：协议本身是开放的（git 远端 + 几个 HTTP 接口），
+> 任何人照着协议重写一份都不需要碰这份代码。**开放协议是挡不住的，也不该挡。**
 
 贡献走 **DCO**（不是 CLA）：你保留版权，项目也无法重新授权。见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

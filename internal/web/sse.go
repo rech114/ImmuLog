@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // sse.go —— SSE 传输层。纯管道：不懂消息语义，只负责把 Event 写到线上。
 //

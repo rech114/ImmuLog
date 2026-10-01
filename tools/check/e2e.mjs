@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/e2e.mjs —— 端到端：真实 Go 二进制 + 真实浏览器 + 真实 git 仓库。
 //
 // 上游所有检查都跑在 mock 或内存服务上。只有这一条把三样东西接在一起，

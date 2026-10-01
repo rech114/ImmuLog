@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: Apache-2.0 */
 // api.js —— 唯一碰 fetch 的地方。
 // 单一写入口：kind 区分 msg / retract / receipt，不开三个端点。
 

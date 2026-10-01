@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/sse.mjs —— 验证「事件 id = commit OID ⇒ 断线续传白送」这条设计。
 //
 // 用 node:http 起一个会主动掐断的 SSE 服务端，观察浏览器原生 EventSource

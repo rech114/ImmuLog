@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // http.go —— 路由与处理器。只做协议适配，不含领域逻辑，不含传输细节。
 package web

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // Command immulog 是一个把 Git 当作信任根的聊天服务。
 //

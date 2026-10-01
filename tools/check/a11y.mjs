@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/a11y.mjs —— 无障碍扫描 + 键盘可用性。
 //
 // 用 axe-core 而不是 @axe-core/playwright：后者会拖进 @playwright/test，

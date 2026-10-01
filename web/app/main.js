@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: Apache-2.0 */
 // main.js —— 组装。唯一同时知道 store / stream / api / render 的地方。
 // 数据流严格单向：stream → store → render。
 

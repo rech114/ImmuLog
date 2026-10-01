@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // check/federation.mjs —— 双节点端到端：真正的多源同步与分裂视图检测。
 //
 // 上游所有检查都是单节点。只有这一条起两个真实进程、共用一个中转仓库，

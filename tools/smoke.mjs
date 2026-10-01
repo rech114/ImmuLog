@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // tools/smoke.mjs —— 前端冒烟测试（开发工具，不进 embed）
 //
 // 两个场景，都是黑盒：只通过 DOM 事件驱动，不 import 内部符号。

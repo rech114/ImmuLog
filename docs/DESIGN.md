@@ -685,9 +685,9 @@ vendor 需要的文件（实测体积）：
 ```
 immulog/
 ├── go.mod                   module immulog（零第三方依赖）
-├── main.go                  组装与生命周期                         [AGPL-3.0]
+├── main.go                  组装与生命周期
 ├── docs/DESIGN.md           本文档
-├── core/                    ← 可被外部导入的库，Apache-2.0
+├── core/                    ← 可被外部导入的库
 │   ├── gitx/                ← 全项目唯一允许出现 os/exec 的包
 │   │   ├── exec.go          子进程边界：stdin 注入、超时、错误归一、Init
 │   │   ├── object.go        commit-tree / hash-object / log / trailer 读取
@@ -700,11 +700,11 @@ immulog/
 │       ├── snapshot.go      快照摘要与分裂视图判定
 │       ├── sync.go          多源同步：隔离区 → 校验 → 快进
 │       └── anchor.go        锚定链与外部锚定接口
-├── internal/web/            ← 传输，不含领域逻辑                 [AGPL-3.0]
+├── internal/web/            ← 传输，不含领域逻辑
 │   ├── http.go              路由与处理器（net/http）
 │   ├── sse.go               事件流广播（text/event-stream）
 │   └── guard.go             后台循环：巡检 / 同步 / 锚定
-└── web/                     ← 前端，//go:embed 整个目录           [AGPL-3.0]
+└── web/                     ← 前端，//go:embed 整个目录
     ├── index.html           MD3 骨架
     ├── style.css            布局 / 形状语义 / motion / 字体
     └── app/

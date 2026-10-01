@@ -30,6 +30,18 @@ jobs:
       - run: go vet ./...
       - name: 格式检查
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: 每个源文件必须带 SPDX 许可头
+        run: |
+          missing=""
+          for f in $(find . -name '*.go' -o -name '*.js' -o -name '*.mjs' | grep -v '/\.git/' | grep -v node_modules | sort); do
+            head -1 "$f" | grep -q 'SPDX-License-Identifier: Apache-2.0' || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::以下文件缺少 SPDX-License-Identifier: Apache-2.0"
+            for f in $missing; do echo "  $f"; done
+            exit 1
+          fi
+          echo "全部源文件都带许可头 ✓"
       - name: 每个提交必须带 Signed-off-by（DCO）
         run: |
           missing=""
