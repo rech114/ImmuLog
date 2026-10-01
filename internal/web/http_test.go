@@ -63,7 +63,9 @@ func newServer(t *testing.T) (*httptest.Server, *feed.Store, string) {
 	}
 	_ = fs.FS(files)
 
-	srv := httptest.NewServer(New(store, NewHub(), repo, files).Handler())
+	srv := httptest.NewServer(New(Config{
+		Store: store, Hub: NewHub(), Repo: repo, Files: files,
+	}).Handler())
 	t.Cleanup(srv.Close)
 	return srv, store, dir
 }
@@ -248,6 +250,8 @@ func TestCommitStatusMapping(t *testing.T) {
 		{"超长", feed.ErrTooLong, http.StatusRequestEntityTooLarge, "too_long"},
 		{"空正文", feed.ErrEmpty, http.StatusBadRequest, "empty_body"},
 		{"缺撤回目标", feed.ErrNoTarget, http.StatusBadRequest, "missing_target"},
+		{"目标格式非法", feed.ErrBadTarget, http.StatusBadRequest, "bad_target"},
+		{"不是自己的消息", feed.ErrNotMine, http.StatusForbidden, "not_your_message"},
 		{"其它", errors.New("boom"), http.StatusInternalServerError, "commit_failed"},
 	}
 	for _, c := range cases {
@@ -369,7 +373,7 @@ func TestStreamAlarmsOnTamperedHistory(t *testing.T) {
 	parent := rawGit(t, dir, "", "rev-parse", head+"^")
 	tree := rawGit(t, dir, "", "hash-object", "-w", "-t", "tree", "--stdin")
 	forged := rawGit(t, dir, "伪造\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n", "commit-tree", tree, "-p", parent)
-	rawGit(t, dir, "", "update-ref", feed.Ref(store.Pub()), forged)
+	rawGit(t, dir, "", "update-ref", feed.FeedRef(store.Pub()), forged)
 
 	resp, err := http.Get(srv.URL + "/api/stream")
 	if err != nil {
@@ -406,7 +410,7 @@ func TestSnapshotListsFeedRefsButNotWitness(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Refs) != 1 || out.Refs[0].Name != feed.Ref(store.Pub()) {
+	if len(out.Refs) != 1 || out.Refs[0].Name != feed.FeedRef(store.Pub()) {
 		t.Fatalf("快照应只含 feeds 命名空间：%+v", out.Refs)
 	}
 	if !out.OK || out.Witness == "" {

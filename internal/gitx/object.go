@@ -12,22 +12,38 @@ import (
 //
 // 用 `git log -z`（记录之间是 NUL）+ 字段之间 \x1f，并且把 %B 放在**最后**：
 // 于是正文里出现 \x1e / 任意控制字符都不会把记录切错。
-const logFormat = "%H%x1f%an%x1f%at%x1f" +
+// %G? 是 git 自己的签名状态：N=未签名 G=有效 U=密钥未知 B=签名损坏。
+const logFormat = "%H%x1f%an%x1f%at%x1f%G?%x1f" +
 	"%(trailers:key=Immutalk-Seq,valueonly)%x1f" +
 	"%(trailers:key=Immutalk-Retracts,valueonly)%x1f" +
 	"%(trailers:key=Immutalk-Reason,valueonly)%x1f" +
 	"%B"
 
 // RawCommit 是 log 解析出的一条原始提交。
-// Trailer 三项由 git 自己解析（不重造轮子）；Body 是完整原始正文，由 feed 剥离。
+// Trailer 三项与签名状态由 git 自己解析（不重造轮子）；Body 是完整原始正文。
 type RawCommit struct {
 	OID      string
 	Author   string
 	At       time.Time
+	Sig      string // "" | "good" | "untrusted" | "bad"
 	Seq      string
 	Retracts string
 	Reason   string
 	Body     string
+}
+
+// sigStatus 把 git 的 %G? 单字符翻译成人能读的状态。
+func sigStatus(c string) string {
+	switch c {
+	case "G":
+		return "good"
+	case "U":
+		return "untrusted"
+	case "B":
+		return "bad"
+	default:
+		return ""
+	}
 }
 
 // EmptyTree 返回空 tree 的对象名并写入对象库。
@@ -106,18 +122,19 @@ func parseLog(raw string) []RawCommit {
 		if rec == "" {
 			continue
 		}
-		// 只切前 6 个分隔符，正文（第 7 项）原样保留，哪怕它含 \x1f
-		f := strings.SplitN(rec, "\x1f", 7)
-		if len(f) != 7 {
+		// 只切前 7 个分隔符，正文（第 8 项）原样保留，哪怕它含 \x1f
+		f := strings.SplitN(rec, "\x1f", 8)
+		if len(f) != 8 {
 			continue
 		}
 		c := RawCommit{
 			OID:      strings.TrimSpace(f[0]),
 			Author:   strings.TrimSpace(f[1]),
-			Seq:      strings.TrimSpace(f[3]),
-			Retracts: strings.TrimSpace(f[4]),
-			Reason:   strings.TrimSpace(f[5]),
-			Body:     f[6],
+			Sig:      sigStatus(strings.TrimSpace(f[3])),
+			Seq:      strings.TrimSpace(f[4]),
+			Retracts: strings.TrimSpace(f[5]),
+			Reason:   strings.TrimSpace(f[6]),
+			Body:     f[7],
 		}
 		if secs, err := strconv.ParseInt(strings.TrimSpace(f[2]), 10, 64); err == nil {
 			c.At = time.Unix(secs, 0).UTC()
@@ -127,4 +144,69 @@ func parseLog(raw string) []RawCommit {
 		}
 	}
 	return commits
+}
+
+// LogRange 只读 since 之后（不含）到 ref 之间的提交，从旧到新。
+// 同步时用它算出"这次到底新到了哪几条"，一次进程调用。
+func (r *Repo) LogRange(ctx context.Context, ref, since string, limit int) ([]RawCommit, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	spec := ref
+	if since != "" {
+		spec = since + ".." + ref
+	}
+	args := []string{"log", "-z", "--reverse", "--format=" + logFormat}
+	if limit > 0 {
+		args = append(args, "-n", strconv.Itoa(limit))
+	}
+	args = append(args, spec)
+
+	out, err := r.run(ctx, nil, args...)
+	if err != nil {
+		var ge *Error
+		if errors.As(err, &ge) && (ge.Code == 128 || ge.Code == 1) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseLog(string(out)), nil
+}
+
+// TrailerValue 读一个提交的若干个 trailer 值（一次进程调用）。
+// 顺序与 keys 一致；不存在时该位为空串。
+func (r *Repo) TrailerValue(ctx context.Context, oid string, keys ...string) ([]string, error) {
+	if oid == "" || len(keys) == 0 {
+		return nil, nil
+	}
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = "%(trailers:key=" + k + ",valueonly)"
+	}
+	out, err := r.run(ctx, nil, "log", "-1", "--format="+strings.Join(parts, "%x1f"), oid)
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(strings.TrimRight(string(out), "\n"), "\x1f")
+	vals := make([]string, len(keys))
+	for i := range keys {
+		if i < len(fields) {
+			vals[i] = strings.TrimSpace(fields[i])
+		}
+	}
+	return vals, nil
+}
+
+// HashBlob 计算数据的 blob 对象名。<type> <len>\0<content> 的 SHA-1 —— git 自己的定义。
+// write=false 时只算不存，适合周期性算摘要。
+func (r *Repo) HashBlob(ctx context.Context, data []byte, write bool) (string, error) {
+	args := []string{"hash-object", "--stdin"}
+	if write {
+		args = append(args, "-w")
+	}
+	out, err := r.run(ctx, data, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }

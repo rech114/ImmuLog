@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"immutalk/internal/feed"
@@ -19,20 +20,50 @@ const (
 	replayFirst   = 50  // 首屏
 	replayResume  = 200 // 断线续传
 	maxUploadSize = feed.MaxBody * 2
+	pushQueue     = 1 // 推送请求合并：连点只推一次
 )
+
+// Config 是组装 Server 需要的外部依赖。
+type Config struct {
+	Store     *feed.Store
+	Hub       *Hub
+	Repo      *gitx.Repo
+	Files     fs.FS
+	Remotes   []feed.Remote
+	Publisher feed.Publisher
+}
 
 // Server 把领域层与传输层接起来。
 type Server struct {
-	store *feed.Store
-	hub   *Hub
-	repo  *gitx.Repo
-	files fs.FS
-	log   *slog.Logger
+	store     *feed.Store
+	hub       *Hub
+	repo      *gitx.Repo
+	files     fs.FS
+	remotes   []feed.Remote
+	publisher feed.Publisher
+	state     *State
+	log       *slog.Logger
+
+	pushReq chan struct{}
+
+	muGuard   sync.Mutex
+	guardSeen map[string]bool
 }
 
 // New 组装一个 Server。
-func New(store *feed.Store, hub *Hub, repo *gitx.Repo, files fs.FS) *Server {
-	return &Server{store: store, hub: hub, repo: repo, files: files, log: slog.Default()}
+func New(cfg Config) *Server {
+	return &Server{
+		store:     cfg.Store,
+		hub:       cfg.Hub,
+		repo:      cfg.Repo,
+		files:     cfg.Files,
+		remotes:   cfg.Remotes,
+		publisher: cfg.Publisher,
+		state:     &State{},
+		log:       slog.Default(),
+		pushReq:   make(chan struct{}, pushQueue),
+		guardSeen: map[string]bool{},
+	}
 }
 
 // Handler 返回完整的路由表。
@@ -89,6 +120,8 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.hub.Broadcast(feedEvent(msg)) // 广播给所有人（含发送者，前端按 OID 去重）
+	s.kick()                        // 后台合并推送，不阻塞请求路径
+	s.refreshSnapshot(r.Context())
 	writeJSON(w, http.StatusCreated, map[string]any{"oid": msg.OID, "seq": msg.Seq})
 }
 
@@ -104,10 +137,14 @@ func commitStatus(err error) (int, string) {
 		return http.StatusConflict, "cas_failed"
 	case errors.Is(err, feed.ErrTooLong):
 		return http.StatusRequestEntityTooLarge, "too_long"
-	case errors.Is(err, feed.ErrNoTarget):
-		return http.StatusBadRequest, "missing_target"
 	case errors.Is(err, feed.ErrEmpty):
 		return http.StatusBadRequest, "empty_body"
+	case errors.Is(err, feed.ErrNoTarget):
+		return http.StatusBadRequest, "missing_target"
+	case errors.Is(err, feed.ErrBadTarget):
+		return http.StatusBadRequest, "bad_target"
+	case errors.Is(err, feed.ErrNotMine):
+		return http.StatusForbidden, "not_your_message"
 	default:
 		return http.StatusInternalServerError, "commit_failed"
 	}
@@ -116,6 +153,34 @@ func commitStatus(err error) (int, string) {
 func errorCode(err error) string {
 	_, code := commitStatus(err)
 	return code
+}
+
+// kick 请求一次后台推送；已有待处理的请求就合并掉（聚合推送，见 §10 纪律 6）。
+func (s *Server) kick() {
+	select {
+	case s.pushReq <- struct{}{}:
+	default:
+	}
+}
+
+// pushLoop 把本机 feed 推给所有远端。失败不致命 —— 本地提交才是事实。
+func (s *Server) pushLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.pushReq:
+			if len(s.remotes) == 0 {
+				continue
+			}
+			if tip, err := s.store.Tip(ctx); err != nil || tip == "" {
+				continue
+			}
+			for name, msg := range feed.Publish(ctx, s.repo, s.remotes, s.store.FeedRef()) {
+				s.log.Warn("推送失败", "remote", name, "err", msg)
+			}
+		}
+	}
 }
 
 // ── 下行 ──────────────────────────────────────────────────────────
@@ -156,9 +221,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("回放中断", "err", err)
 		return
 	}
-
-	head, _ := s.store.Tip(ctx)
-	if err := sess.Send(Event{Type: "hello", Data: helloPayload{Head: head, Signed: s.store.Signed()}}); err != nil {
+	if err := sess.Send(Event{Type: "hello", Data: s.hello(ctx)}); err != nil {
 		return
 	}
 
@@ -202,12 +265,15 @@ func (s *Server) replay(ctx context.Context, sess *Session, since string, limit 
 			}
 		}
 	}
-	for i := end - 1; i >= 0; i-- {
-		ev, ok := feedEventOf(history[i])
-		if !ok {
-			continue
+	// 从旧到新：先收集要发的，再逆序发出
+	batch := make([]Event, 0, end)
+	for i := 0; i < end; i++ {
+		if ev, ok := feedEventOf(history[i]); ok {
+			batch = append(batch, ev)
 		}
-		if err := sess.Send(ev); err != nil {
+	}
+	for i := len(batch) - 1; i >= 0; i-- {
+		if err := sess.Send(batch[i]); err != nil {
 			return err
 		}
 	}
@@ -217,42 +283,81 @@ func (s *Server) replay(ctx context.Context, sess *Session, since string, limit 
 // ── 观测 ──────────────────────────────────────────────────────────
 
 type helloPayload struct {
-	Head   string `json:"head,omitempty"`
-	Signed bool   `json:"signed"`
-	Peers  any    `json:"peers,omitempty"`
+	Head       string          `json:"head,omitempty"`
+	Signed     bool            `json:"signed"`
+	Snapshot   string          `json:"snapshot,omitempty"`
+	AnchoredAt string          `json:"anchoredAt,omitempty"`
+	External   bool            `json:"external"`
+	Peers      []feed.PeerView `json:"peers,omitempty"`
 }
 
-// handleSnapshot 返回各 feed 的当前锚点 —— gossip 快照的数据源。
+func (s *Server) hello(ctx context.Context) helloPayload {
+	head, _ := s.store.Tip(ctx)
+	snap, anchor, peers := s.state.Snapshot()
+
+	p := helloPayload{
+		Head:     head,
+		Signed:   s.store.Signed(),
+		Snapshot: snap.Digest,
+		Peers:    peers,
+	}
+	if anchor.OID != "" {
+		p.AnchoredAt = anchor.At.Local().Format("2006-01-02 15:04")
+		p.External = anchor.External != ""
+	}
+	if p.Snapshot == "" {
+		if fresh, err := feed.Capture(ctx, s.repo); err == nil {
+			p.Snapshot = fresh.Digest
+		}
+	}
+	return p
+}
+
+// handleSnapshot 返回本机对全部 feed 的看法 —— gossip 的交换单位。
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
-	refs, err := s.repo.Refs(r.Context(), "refs/feeds/")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "refs_failed"})
-		return
+	snap, anchor, peers := s.state.Snapshot()
+	if snap.Digest == "" {
+		if fresh, err := feed.Capture(r.Context(), s.repo); err == nil {
+			snap = fresh
+		}
 	}
 	verdict, _ := s.store.Verify(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"refs":    refs,
+		"digest":  snap.Digest,
+		"refs":    snap.Refs,
+		"at":      snap.At,
+		"anchor":  anchor,
+		"peers":   peers,
 		"witness": verdict.Witness,
 		"tip":     verdict.Current,
 		"ok":      verdict.OK,
 		"reason":  verdict.Reason,
+		"feed":    s.store.FeedRef(),
+		"remotes": s.remotes,
 	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	head, _ := s.store.Tip(r.Context())
+	_, anchor, peers := s.state.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"head":    head,
-		"feed":    s.store.Pub(),
-		"signed":  s.store.Signed(),
-		"clients": s.hub.ClientCount(),
+		"ok":       true,
+		"head":     head,
+		"feed":     s.store.Pub(),
+		"signed":   s.store.Signed(),
+		"clients":  s.hub.ClientCount(),
+		"remotes":  len(s.remotes),
+		"peers":    peers,
+		"anchored": anchor.OID != "",
 	})
 }
 
 // ── 线协议适配 ────────────────────────────────────────────────────
 
 // feedEventOf 把领域消息翻译成线上事件。撤回不产生新气泡，只更新目标。
+//
+// 事件里带上 feed：客户端据此保证「撤回只对同一条 feed 内的消息生效」，
+// 于是撤回是作者的权利，而不是谁都能对别人做的事。
 func feedEventOf(m feed.Message) (Event, bool) {
 	if m.Kind == feed.KindRetract {
 		if m.Retracts == "" {
@@ -260,6 +365,7 @@ func feedEventOf(m feed.Message) (Event, bool) {
 		}
 		return Event{ID: m.OID, Type: "retract", Data: map[string]any{
 			"oid":      m.OID,
+			"feed":     m.Feed,
 			"retracts": m.Retracts,
 			"reason":   m.Reason,
 		}}, true

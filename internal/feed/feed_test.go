@@ -92,7 +92,7 @@ func TestEveryMessageHasParseableSeqTrailer(t *testing.T) {
 	target := mustSend(t, s, "待撤回")
 
 	// 各条消息的 seq 必须能被 git 原样读回：1,2,3,4
-	ref := Ref(s.Pub())
+	ref := FeedRef(s.Pub())
 	out := rawGit(t, dir, "log", "--format=%(trailers:key=Immutalk-Seq,valueonly)", ref)
 	var seqs []string
 	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -225,8 +225,78 @@ func TestRetractIsAppendNotDelete(t *testing.T) {
 
 func TestRetractRequiresTarget(t *testing.T) {
 	s, _ := newStore(t)
-	if _, err := s.Retract(context.Background(), "", "x"); err == nil {
-		t.Fatal("缺少目标时应报错")
+	if _, err := s.Retract(context.Background(), "", "x"); !errors.Is(err, ErrNoTarget) {
+		t.Fatal("缺少目标时应返回 ErrNoTarget")
+	}
+}
+
+// 撤回目标是请求体来的字符串，必须严格校验格式 —— 否则又是一个注入面。
+func TestRetractRejectsMalformedTarget(t *testing.T) {
+	s, _ := newStore(t)
+	mustSend(t, s, "占位")
+	for _, bad := range []string{
+		"not-an-oid",
+		strings.Repeat("z", 40),
+		strings.Repeat("a", 39),
+		strings.Repeat("a", 41),
+		"aaaa\nImmutalk-Seq: 999",
+	} {
+		if _, err := s.Retract(context.Background(), bad, "x"); !errors.Is(err, ErrBadTarget) {
+			t.Fatalf("Retract(%q) 应返回 ErrBadTarget，得到 %v", bad, err)
+		}
+	}
+}
+
+// 只能撤回自己 feed 里的消息 —— 撤回是作者的权利。
+func TestRetractOnlyOwnMessages(t *testing.T) {
+	repo, _ := node(t, "alice")
+	ctx := context.Background()
+	me := storeOf(t, repo, "alice")
+	other := storeOf(t, repo, "bob")
+
+	mine := mustSend(t, me, "我说的")
+	theirs := mustSend(t, other, "他说的")
+
+	if _, err := me.Retract(ctx, theirs.OID, "越权"); !errors.Is(err, ErrNotMine) {
+		t.Fatalf("不得撤回别人 feed 里的消息，得到 %v", err)
+	}
+	// 完全不存在的对象同样拒绝
+	if _, err := me.Retract(ctx, strings.Repeat("a", 40), "凭空"); !errors.Is(err, ErrNotMine) {
+		t.Fatalf("不存在的目标应被拒，得到 %v", err)
+	}
+	// 自己的可以
+	if _, err := me.Retract(ctx, mine.OID, "我的"); err != nil {
+		t.Fatalf("撤回自己的消息应成功：%v", err)
+	}
+}
+
+// 撤回理由来自请求体，一个换行就能伪造 trailer —— 而 git 取最后一次出现，伪造的会赢。
+func TestRetractReasonCannotInjectTrailers(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	target := mustSend(t, s, "原消息")
+
+	nasty := "ok\nImmutalk-Seq: 999\nImmutalk-Retracts: " + strings.Repeat("f", 40) + "\n"
+	if _, err := s.Retract(ctx, target.OID, nasty); err != nil {
+		t.Fatalf("Retract: %v", err)
+	}
+
+	got, _ := s.History(ctx, 10)
+	if len(got) != 2 {
+		t.Fatalf("应有 2 条，得到 %d", len(got))
+	}
+	ev := got[0]
+	if ev.Kind != KindRetract {
+		t.Fatalf("链尾应是撤回事件：%+v", ev)
+	}
+	if ev.Seq != 2 {
+		t.Fatalf("注入生效了：Seq = %d，期望 2", ev.Seq)
+	}
+	if ev.Retracts != target.OID {
+		t.Fatalf("注入的 Retracts 覆盖了真值：%q", ev.Retracts)
+	}
+	if len(ev.Retracts) != 40 {
+		t.Fatalf("Retracts 形状不对：%q", ev.Retracts)
 	}
 }
 
@@ -262,7 +332,7 @@ func TestVerifyDetectsRewrite(t *testing.T) {
 	if forged == b.OID {
 		t.Fatal("前置条件：伪造的提交应是一个不同的对象")
 	}
-	rawGit(t, dir, "update-ref", Ref(s.Pub()), forged)
+	rawGit(t, dir, "update-ref", FeedRef(s.Pub()), forged)
 
 	v, err := s.Verify(context.Background())
 	if err != nil {
@@ -285,7 +355,7 @@ func TestVerifyDetectsRollback(t *testing.T) {
 	b := mustSend(t, s, "b")
 
 	// 外部攻击者：把链尾指回一个更早的点
-	rawGit(t, dir, "update-ref", Ref(s.Pub()), a.OID)
+	rawGit(t, dir, "update-ref", FeedRef(s.Pub()), a.OID)
 
 	v, err := s.Verify(context.Background())
 	if err != nil {
@@ -322,7 +392,7 @@ func TestWitnessLivesOutsideFeedNamespace(t *testing.T) {
 	if strings.Contains(feeds, "witness") {
 		t.Fatalf("见证锚不得出现在 refs/feeds 下：%q", feeds)
 	}
-	if strings.TrimSpace(feeds) != Ref(s.Pub()) {
+	if strings.TrimSpace(feeds) != FeedRef(s.Pub()) {
 		t.Fatalf("refs/feeds 下应恰好只有本机 feed，实际 %q", feeds)
 	}
 }

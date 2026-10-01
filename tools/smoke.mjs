@@ -172,32 +172,46 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
   const $ = (s) => dom.window.document.querySelectorAll(s);
   const one = (s) => dom.window.document.querySelector(s);
   const OID = 'a'.repeat(40);
+  const FEED = 'refs/feeds/alice';
+  const OTHER_FEED = 'refs/feeds/mallory';
 
   ok(FakeES.last !== undefined, '已建立 SSE 连接');
   ok(FakeES.last.url === '/api/stream', '连到 /api/stream');
   ok($('.msg').length === 0, '初始为空（不伪造首屏）');
 
-  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', body: '来自真实流' }, OID);
+  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: '来自真实流' }, OID);
   await flush();
   ok($('.msg').length === 1, 'SSE 帧渲染成消息');
   ok(one('.msg .text').textContent.includes('来自真实流'), '正文正确');
 
-  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', body: '来自真实流' }, OID);
+  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: '来自真实流' }, OID);
   await flush();
   ok($('.msg').length === 1, '相同 OID 去重，不重复渲染');
 
-  FakeES.last.emit('retract', { oid: 'b'.repeat(40), retracts: OID, reason: '说错了' }, 'b'.repeat(40));
+  // 跨越 feed 的撤回必须被忽略：撤回是作者的权利，不是谁都能对别人做的
+  FakeES.last.emit('retract',
+    { oid: 'e'.repeat(40), feed: OTHER_FEED, retracts: OID, reason: '越权撤回' }, 'e'.repeat(40));
   await flush();
-  ok(one('.msg').dataset.state === 'retracted', 'SSE 撤回帧生效');
+  ok(one('.msg').dataset.state === 'verified', '别的 feed 发来的撤回被忽略（撤回只对同 feed 生效）');
+
+  FakeES.last.emit('retract',
+    { oid: 'b'.repeat(40), feed: FEED, retracts: OID, reason: '说错了' }, 'b'.repeat(40));
+  await flush();
+  ok(one('.msg').dataset.state === 'retracted', '同 feed 的撤回帧生效');
   ok(one('.msg .strike-note').textContent.includes('说错了'), '撤回原因上屏');
 
-  FakeES.last.emit('alarm', { oid: 'c'.repeat(40), title: '检测到历史改写', local: '111111', remote: '222222' }, 'c'.repeat(40));
+  FakeES.last.emit('alarm',
+    { oid: 'c'.repeat(40), title: '检测到历史改写', local: '111111', remote: '222222' }, 'c'.repeat(40));
   await flush();
   ok($('.alarm').length === 1, 'SSE 告警帧生效');
 
-  FakeES.last.emit('hello', { head: OID, anchoredAt: '今天 08:00', peers: [{ name: 'mirror', url: 'git@node-b', ok: true }] }, '');
+  FakeES.last.emit('hello', {
+    head: OID, snapshot: 'abcdef1234567890', anchoredAt: '2026-10-01 12:00',
+    peers: [{ name: 'hub', url: 'git@node-b', ok: true }],
+  }, '');
   await flush();
-  ok(one('#anchored-at').textContent.includes('08:00'), 'hello 帧更新外部锚定时间');
+  ok(one('#anchored-at').textContent.includes('12:00'), 'hello 帧更新外部锚定时间');
+  ok(one('#snapshot').textContent.startsWith('abcdef'), 'hello 帧更新快照摘要');
   ok(one('#peers .kv') !== null, 'hello 帧渲染对端列表');
 
   // 发送：服务端返回 cas_failed

@@ -14,8 +14,16 @@ import (
 // git 直接在测试里跑 git 命令。生产代码禁止 os/exec，测试不受此限。
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	return gitIn(t, dir, "", args...)
+}
+
+func gitIn(t *testing.T, dir, stdin string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(cmd.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)

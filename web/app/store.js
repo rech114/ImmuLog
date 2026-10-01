@@ -32,6 +32,7 @@ function apply(evt) {
         oid: evt.oid,
         seq: evt.seq,
         author: evt.author,
+        feed: evt.feed || '',
         body: evt.body,
         sig: evt.sig || '',
         state: evt.pending ? 'pending' : (evt.verified === false ? 'unverified' : 'verified'),
@@ -47,6 +48,9 @@ function apply(evt) {
     case 'retract': {
       const target = byOid.get(evt.retracts);
       if (!target) return null;
+      // 撤回只对**同一条 feed** 内的消息生效：撤回是作者的权利。
+      // 双方都带 feed 才判定；缺信息时不拦（兼容旧事件）。
+      if (evt.feed && target.feed && evt.feed !== target.feed) return null;
       target.state = 'retracted';
       target.reason = evt.reason || '';
       target.retractOid = evt.oid;
@@ -64,6 +68,7 @@ function apply(evt) {
 
     case 'hello': {
       cursors.anchor = evt.head || cursors.anchor;
+      cursors.snapshot = evt.snapshot || cursors.snapshot;
       cursors.anchoredAt = evt.anchoredAt || cursors.anchoredAt;
       peers = evt.peers || peers;
       emit('meta', stats());

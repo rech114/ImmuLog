@@ -23,9 +23,10 @@
 | 部分 | 状态 |
 |---|---|
 | 设计文档 | ✅ 14 节 |
-| 前端界面 | ✅ 可运行，128 项检查通过 |
-| 后端 `gitx` / `feed` / `web` | ✅ 完成，44 个 Go 用例 |
-| 多源同步 / 外部锚定 / 加密 | ⬜ 路线图 4–5 |
+| 前端界面 | ✅ 可运行 |
+| 后端 | ✅ 完成 |
+| **多源同步 / 快照 / 锚定链** | ✅ 完成 |
+| 加密（可遗忘） | ⬜ 路线图 5 |
 
 ## 跑起来
 
@@ -46,7 +47,38 @@ git config --global user.signingkey ~/.ssh/id_ed25519.pub
 
 没有配置 `user.signingkey` 时，服务会在启动日志里**明确警告身份可被冒名**——它不假装安全。
 
-环境变量：`IMMUTALK_REPO`（默认 `./repoDB`）、`PORT`（默认 `8081`）。
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `IMMUTALK_REPO` | `./repoDB` | 仓库目录（自动 `git init --bare`） |
+| `PORT` | `8081` | 监听端口 |
+| `IMMUTALK_REMOTES` | 空 | 同步源，逗号分隔。`url` 或 `name=url`，走 git 自己的 transport（ssh/https/file/git） |
+| `IMMUTALK_ANCHOR_URL` | 空 | 外部锚定服务。收到 `POST {snapshot, at}` 后把响应体当回执记进锚定链 |
+| `IMMUTALK_SYNC_INTERVAL` | `5s` | 同步间隔 |
+| `IMMUTALK_ANCHOR_INTERVAL` | `60s` | 锚定间隔 |
+
+两个「没配」都会在启动时**明确警告**，不假装安全：
+
+```
+WARN 未配置 IMMUTALK_REMOTES：单节点模式，不会与任何对端同步
+WARN 未配置 IMMUTALK_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定
+```
+
+### 多节点示例
+
+```bash
+# 一个共享中转（任何 git 托管都行）
+git init --bare /srv/chat.git
+
+# 节点 A
+IMMUTALK_REPO=./a IMMUTALK_REMOTES=hub=/srv/chat.git PORT=8081 ./immutalk
+# 节点 B
+IMMUTALK_REPO=./b IMMUTALK_REMOTES=hub=/srv/chat.git PORT=8082 ./immutalk
+```
+
+每个节点把自己的 feed 推到中转站，并从**所有**中转站拉取、逐条校验、只允许快进。
+配多个中转站时，它们之间互相矛盾会被判为**分裂视图**并告警。
 
 ### 只看界面（不需要后端）
 
@@ -87,15 +119,19 @@ immutalk/
 ├── internal/
 │   ├── gitx/               ← 唯一允许出现 os/exec 的包
 │   │   ├── exec.go         子进程边界：stdin 注入、超时、错误归一、Init
-│   │   ├── object.go       commit-tree / hash-object / log
-│   │   └── ref.go          CAS 读写 / for-each-ref / is-ancestor / count
+│   │   ├── object.go       commit-tree / hash-object / log / trailer 读取
+│   │   ├── ref.go          CAS 读写 / for-each-ref / is-ancestor / count
+│   │   └── transport.go    fetch / push（复用 git 自己的 transport）
 │   ├── feed/               ← 领域语义
 │   │   ├── feed.go         消息编解码 + 发送 / 撤回 / 历史
-│   │   └── verify.go       见证锚与引用重写检测
+│   │   ├── verify.go       见证锚与引用重写检测
+│   │   ├── snapshot.go     快照摘要与分裂视图判定
+│   │   ├── sync.go         多源同步：隔离区 → 校验 → 快进
+│   │   └── anchor.go       锚定链与外部锚定接口
 │   └── web/                ← 传输
 │       ├── http.go         路由与处理器（net/http）
 │       ├── sse.go          EventSource 流（零依赖）
-│       └── guard.go        完整性巡检与告警广播
+│       └── guard.go        后台循环：巡检 / 同步 / 锚定
 └── web/                    前端，//go:embed
     ├── index.html
     ├── style.css
@@ -123,6 +159,35 @@ CI 分三个 job（`go` / `smoke` / `browser`），全部跑在 x86_64 runner �
 > 开发机若为 aarch64，`-race` 在 proot 沙箱里会因 VMA 受限失败 —— 那是环境限制，
 > 竞态检测交给 CI。
 
+### 已知的本机环境限制（不影响产品）
+
+本机的 proot 沙箱里 **`receive-pack`（push 的服务端）必定失败**，任何消费方都如此：
+
+```
+$ git init --bare h.git && git push h.git HEAD:refs/x
+error: unpack should have generated <sha>, but I can't find it!
+ ! [remote rejected] HEAD -> refs/x (bad pack)
+```
+
+**已排除的可能**（都实测过）：
+
+| 假设 | 实测结果 |
+|---|---|
+| 文件系统写不了 packfile | ✗ `git repack` / `git bundle` / `git clone --no-local` 全部正常 |
+| upload-pack 也有问题 | ✗ fetch / clone 完全正常 |
+| 是本地路径传输的锅 | ✗ `file://`、`file://localhost/` 同样失败 |
+| 可以靠参数绕过 | ✗ `--no-thin` / `unpackLimit=1` / `fsync=none` / `threads=1` 全部失败 |
+
+`GIT_TRACE` 显示失败发生在 receive-pack 的 **quarantine 迁移**：`unpack-objects`
+以 `GIT_OBJECT_DIRECTORY=.../tmp_objdir-incoming-XXXX` 写入对象，之后的存在性检查
+却找不到它。这是 proot + 该内核组合的问题，**与 Immutalk 无关** —— 上面那段
+复现里没有任何 Immutalk 代码。
+
+**影响范围**：仅限本机开发。CI 跑在 GitHub 的原生 x86_64 runner 上，push 正常执行。
+`internal/gitx` 的 push 测试在本机会以精确条件跳过（只认 "bad pack" 这一个症状），
+其余测试与端到端用 **fetch 播种中转仓库** 绕过 —— 这不改变被测代码路径，
+因为同步逻辑只读。
+
 ---
 
 ## ⚠️ 发布前必做
@@ -138,7 +203,7 @@ CI 分三个 job（`go` / `smoke` / `browser`），全部跑在 x86_64 runner �
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 0–3 | `gitx` + feed + SSE + 见证锚 + 告警 | ✅ |
-| 4 | 快照 gossip + Merkle 一致性证明 + 外部锚定 | ⬜ |
+| 4 | 多源同步 + 快照 + 锚定链 + 分裂视图检测 | ✅ |
 | 5 | epoch 密钥加密（可遗忘） | ⬜ |
 
 ## License

@@ -40,11 +40,20 @@ const (
 // MaxBody 是单条消息正文的上限。
 const MaxBody = 8192
 
+// MaxReason 是撤回理由的上限。
+const MaxReason = 512
+
 // ErrTooLong 表示正文超长。
 var ErrTooLong = errors.New("消息过长")
 
 // ErrNoTarget 表示撤回没有指定目标对象。
 var ErrNoTarget = errors.New("缺少要撤回的对象")
+
+// ErrBadTarget 表示撤回目标不是一个合法的对象名。
+var ErrBadTarget = errors.New("撤回目标格式不合法")
+
+// ErrNotMine 表示撤回的目标不在本机 feed 里 —— 只能撤回自己说过的话。
+var ErrNotMine = errors.New("只能撤回自己 feed 里的消息")
 
 // ErrEmpty 表示正文为空。
 var ErrEmpty = errors.New("正文不能为空")
@@ -54,6 +63,7 @@ type Message struct {
 	OID      string    `json:"oid"`
 	Seq      int       `json:"seq"`
 	Author   string    `json:"author"`
+	Feed     string    `json:"feed,omitempty"`
 	Body     string    `json:"body"`
 	Sig      string    `json:"sig,omitempty"`
 	Kind     Kind      `json:"kind"`
@@ -61,9 +71,6 @@ type Message struct {
 	Reason   string    `json:"reason,omitempty"`
 	At       time.Time `json:"at"`
 }
-
-// Ref 返回某个用户的 feed 引用名。
-func Ref(pub string) string { return "refs/feeds/" + pub }
 
 // FeedID 由身份派生 feed 标识。
 //
@@ -100,7 +107,7 @@ func New(ctx context.Context, repo *gitx.Repo, pub string) (*Store, error) {
 	return &Store{
 		repo: repo,
 		pub:  pub,
-		ref:  Ref(pub),
+		ref:  FeedRef(pub),
 		name: name,
 		sign: key != "",
 	}, nil
@@ -108,6 +115,9 @@ func New(ctx context.Context, repo *gitx.Repo, pub string) (*Store, error) {
 
 // Pub 返回本 feed 的所有者标识。
 func (s *Store) Pub() string { return s.pub }
+
+// FeedRef 返回本 feed 的引用名。
+func (s *Store) FeedRef() string { return s.ref }
 
 // Signed 表示本 feed 是否对 commit 签名。
 func (s *Store) Signed() bool { return s.sign }
@@ -124,13 +134,45 @@ func (s *Store) Send(ctx context.Context, body string) (Message, error) {
 }
 
 // Retract 追加一条撤回事件。原消息对象不会被删除。
+//
+// 只允许撤回**自己 feed 里**的消息：目标必须是本机链尾的祖先。
+// 这条规则让「撤回」成为作者的权利，而不是任何人都能对别人做的事。
 func (s *Store) Retract(ctx context.Context, oid, reason string) (Message, error) {
 	if oid == "" {
 		return Message{}, ErrNoTarget
 	}
-	if len(reason) > 512 {
-		reason = reason[:512]
+	if !isOID(oid) {
+		return Message{}, ErrBadTarget
 	}
+	if len(reason) > MaxReason {
+		reason = reason[:MaxReason]
+	}
+
+	s.mu.Lock()
+	tip, err := s.repo.Resolve(ctx, s.ref)
+	s.mu.Unlock()
+	if err != nil {
+		return Message{}, err
+	}
+	if tip == "" {
+		return Message{}, ErrNotMine
+	}
+	// 失败即拒绝：对象不存在（IsAncestor 会报 128）或不是祖先，都算"不是你的"
+	exists, err := s.repo.Exists(ctx, oid)
+	if err != nil {
+		return Message{}, err
+	}
+	if !exists {
+		return Message{}, ErrNotMine
+	}
+	ok, err := s.repo.IsAncestor(ctx, oid, tip)
+	if err != nil {
+		return Message{}, err
+	}
+	if !ok {
+		return Message{}, ErrNotMine
+	}
+
 	return s.append(ctx, KindRetract, "", oid, reason)
 }
 
@@ -140,7 +182,7 @@ func (s *Store) History(ctx context.Context, limit int) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decode(raw, s.name, s.sign), nil
+	return Decode(raw, s.ref), nil
 }
 
 // Tip 返回当前链尾；空 feed 返回空串。
@@ -221,15 +263,18 @@ func (s *Store) emptyTree(ctx context.Context) (string, error) {
 // git 的 trailer 解析取**最后一次**出现，因此正文里伪造的同名 trailer 不会生效。
 //
 // 首段绝不能为空：否则 commit message 以空行开头，git 的 trailer 解析会失效。
+//
+// ⚠️ trailer 值必须过 sanitizeValue：值里一个换行就能凭空造出
+// `Immutalk-Seq: 999` 这种伪行，而 git 取最后一次出现 —— 伪造的会赢。
 func render(kind Kind, body string, seq int, retracts, reason string) string {
 	var head string
 	if kind == KindRetract {
-		head = sanitize(reason)
+		head = sanitizeValue(reason)
 		if head == "" {
 			head = "撤回 " + short(oidOr(retracts))
 		}
 	} else {
-		head = sanitize(body)
+		head = sanitizeText(body) // 正文保留换行，多行消息是合法的
 	}
 	if head == "" {
 		head = "（空消息）"
@@ -241,16 +286,18 @@ func render(kind Kind, body string, seq int, retracts, reason string) string {
 	b.WriteString(trailerKind + ": " + string(kind) + "\n")
 	b.WriteString(trailerSeq + ": " + strconv.Itoa(seq) + "\n")
 	if retracts != "" {
-		b.WriteString(trailerRetracts + ": " + retracts + "\n")
+		b.WriteString(trailerRetracts + ": " + sanitizeValue(retracts) + "\n")
 	}
 	if reason != "" {
-		b.WriteString(trailerReason + ": " + sanitize(reason) + "\n")
+		b.WriteString(trailerReason + ": " + sanitizeValue(reason) + "\n")
 	}
 	return b.String()
 }
 
-// decode 把 gitx 的原始提交翻译成领域消息。
-func decode(raw []gitx.RawCommit, me string, signed bool) []Message {
+// Decode 把 gitx 的原始提交翻译成领域消息。
+//
+// feedRef 决定归属 —— 撤回只对**同一条 feed** 里的消息生效（见 docs/DESIGN.md §6.1）。
+func Decode(raw []gitx.RawCommit, feedRef string) []Message {
 	out := make([]Message, 0, len(raw))
 	for _, r := range raw {
 		seq, _ := strconv.Atoi(r.Seq)
@@ -258,22 +305,34 @@ func decode(raw []gitx.RawCommit, me string, signed bool) []Message {
 		if r.Retracts != "" {
 			kind = KindRetract
 		}
-		m := Message{
+		out = append(out, Message{
 			OID:      r.OID,
 			Seq:      seq,
 			Author:   r.Author,
+			Feed:     feedRef,
 			Body:     bodyOf(r.Body),
+			Sig:      sigLabel(r.Sig),
 			Kind:     kind,
 			Retracts: r.Retracts,
 			Reason:   r.Reason,
 			At:       r.At,
-		}
-		if signed && r.Author == me {
-			m.Sig = "ssh" // 仅表示"本机签过名"，具体指纹由 gpg 层给出
-		}
-		out = append(out, m)
+		})
 	}
 	return out
+}
+
+// sigLabel 把 git 的签名状态翻成给人看的话。空串表示没签名。
+func sigLabel(status string) string {
+	switch status {
+	case "good":
+		return "签名有效"
+	case "untrusted":
+		return "签名有效（密钥未知）"
+	case "bad":
+		return "签名损坏"
+	default:
+		return ""
+	}
 }
 
 // bodyOf 剥掉 commit message 末尾的 trailer 块，返回纯净正文。
@@ -304,12 +363,39 @@ func looksLikeTrailers(block string) bool {
 	return true
 }
 
-// sanitize 清掉会破坏记录分隔的控制字符，并去掉尾部空白。
-func sanitize(s string) string {
+// sanitizeText 清掉会破坏记录分隔的控制字符，并去掉尾部空白。
+// **保留换行** —— 多行正文是合法的。
+func sanitizeText(s string) string {
 	s = strings.ReplaceAll(s, "\x00", "")
 	s = strings.ReplaceAll(s, "\x1f", "")
 	s = strings.ReplaceAll(s, "\x1e", "")
 	return strings.TrimRight(s, " \t\r\n")
+}
+
+// sanitizeValue 把内容压成单行，供 trailer 值使用。
+//
+// 这是条安全边界：trailer 值里只要有换行，就能凭空造出一行
+// `Immutalk-Seq: 999`；而 git 的 trailer 解析取**最后一次**出现，
+// 于是伪造的会覆盖真的。压成单行即可根除。
+func sanitizeValue(s string) string {
+	s = sanitizeText(s)
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.TrimSpace(s)
+}
+
+// isOID 判断是否为 40 位十六进制对象名。
+// 撤回目标来自请求体，必须严格校验 —— 否则又是一个注入面。
+func isOID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }
 
 func oidOr(s string) string {
