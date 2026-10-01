@@ -167,6 +167,7 @@ h6>i,
 
 .kv>.max {
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .kv strong {

@@ -620,6 +620,41 @@ vendor 需要的文件（实测体积）：
 1. **shape 的 SVG 是外部文件**（`mask-image: url(gem.svg)`），只 vendor CSS 会导致所有形状失效。
 2. Beer CSS 未加 `-webkit-mask` 前缀，**旧版 Safari 上形状可能不渲染**（现代版本无前缀支持）。
 
+### 8.9 两个踩过的 Beer CSS 坑（务必记住）
+
+| # | 现象 | 真因 | 对策 |
+|---|---|---|---|
+| 1 | 副标题离标题一个多字符高 | Beer 有一条特异性 `(0,4,1)` 的全局规则，给**所有跟在兄弟元素后面的 `<p>`** 加 `margin-block-start: 1rem`；`.kv p` 这种 `(0,1,1)` 压不住 | 用它自留的逃生口 `:not([class*=margin])`——给每个 `<p>` 加 `no-margin`，间距改由显式规则控制 |
+| 2 | 键值行整页竖排堆叠 | `style.css` 里一行 **`// 注释`**（CSS 不支持）被解析成选择器的一部分，导致 `.kv { display:flex }` 这条规则**从未生效** | 只能用 `/* */`。已在 `smoke.mjs` 加护栏：花括号平衡 + 选择器不得含 `//` + 关键规则必须在解析结果里 |
+
+第 2 条尤其阴险：**语法错误不报错，只是规则静默消失**。而且它和坑 1 叠加时，会被误判成「改过头了」——**定位必须靠解析结果，不能靠看截图猜**。
+
+> **新增 `<p>` 时务必带上 `no-margin`。**
+
+### 8.10 验证方式：本机不跑浏览器，全部交给 CI
+
+开发机是 aarch64，装 Chromium 有指令集风险。因此**所有浏览器检查都跑在 GitHub Actions 的 x86_64 runner 上**，截图与实测数据作为 artifact 回传。CI 通常 ≤2:30 完成。
+
+`tools/` 下的检查，按「对这个项目是否真的必要」筛选：
+
+| 检查 | 职责 | 依赖 |
+|---|---|---|
+| `smoke.mjs` | jsdom 黑盒驱动 DOM；逻辑链路 + **样式表完整性** | jsdom |
+| `check/layout.mjs` | 3 视口 × 3 页签几何实测：横向溢出 / 越界裁剪 / 内容贴边 / 触摸目标 / 安全边距 / 键值行同排 | playwright |
+| `check/shapes.mjs` | 形状 `mask-image` 是否真的指向可达 SVG；图标是否渲染成字形而非退化成文字 | playwright |
+| `check/resilience.mjs` | Beer JS/CSS 挂掉、写接口 500 时的降级行为 | playwright |
+| `check/sse.mjs` | 自建会掐断的 SSE 服务端 → 验证浏览器自动重连与 `Last-Event-ID` 续传 | playwright + node:http |
+| `check/a11y.mjs` | axe-core WCAG A/AA + 键盘可用性 + 按钮无障碍名 | axe-core |
+
+**明确没有引入**（并记录理由）：
+
+| 候选 | 为什么不要 |
+|---|---|
+| `@playwright/test` | 需要的是「把实测数据回传」，不是测试框架的 green/red；裸 playwright 够了 |
+| `pixelmatch` / `BackstopJS` / Percy / Chromatic | 视觉回归要有稳定基线，而设计还在改——**没有基线就没有差分**。截图回传给人看即可 |
+| `@lhci/cli` | 性能不是本项目瓶颈（单二进制、10 万条消息 ≈ 20MB） |
+| MSW | `page.route()` 已能拦网络，够用 |
+
 ---
 
 ## 9. 项目结构（一文件一职责）
