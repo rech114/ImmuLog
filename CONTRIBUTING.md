@@ -25,6 +25,15 @@ if any is missing.
 > If you ever want to sell commercial exceptions, you would need a CLA instead.
 > Having chosen the DCO, that door is closed.
 
+> **The DCO is not a licence, and the two are independent.** It attests where a
+> contribution came from; it says nothing about which licence the project uses,
+> and a project on Apache-2.0, MIT or the GPL can carry one. So this file is not
+> a leftover from the layered-licensing arrangement the project once had — that
+> arrangement was simplified away, and the DCO's reason (provenance attested per
+> commit, and copyright never taken from a contributor) was never part of it.
+> The two get conflated because they arrived in the same commit. They were not
+> answering the same question then either.
+
 ---
 
 ## Development
