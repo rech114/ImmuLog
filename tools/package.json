@@ -1,0 +1,14 @@
+{
+  "name": "immutalk-tools",
+  "private": true,
+  "type": "module",
+  "description": "开发/CI 工具。不属于运行时；web/ 不引用这里，因此 embed 出去的仍是零依赖前端。",
+  "scripts": {
+    "smoke": "node smoke.mjs 2>&1 | tee smoke.log",
+    "visual": "node visual.mjs 2>&1 | tee visual.log"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0",
+    "playwright": "^1.63.0"
+  }
+}

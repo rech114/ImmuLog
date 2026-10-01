@@ -1,0 +1,9 @@
+repoDB/
+immutalk
+*.log
+.DS_Store
+
+# 开发/CI 工具依赖与产物，均不属于运行时
+tools/node_modules/
+tools/package-lock.json
+artifacts/
