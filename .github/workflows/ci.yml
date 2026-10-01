@@ -5,7 +5,35 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ① 逻辑冒烟：jsdom，秒级，跑在前端逻辑层
+  # ① Go：静态检查 + 全量单元/集成测试（含竞态检测）
+  go:
+    name: Go 检查与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - name: 依赖必须是零第三方
+        run: |
+          test ! -s go.sum -o "$(grep -c '^' go.sum)" -eq 0 || { echo "go.sum 非空，引入了第三方依赖"; exit 1; }
+          go mod verify
+      - run: go build ./...
+      - run: go vet ./...
+      - name: 格式检查
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      # -race 只能在真内核上跑：本地 aarch64 的 proot 沙箱 VMA 受限
+      - name: 全量测试（含竞态检测）
+        run: go test -race -count=1 -v ./... 2>&1 | tee go-test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-test-log
+          path: go-test.log
+          retention-days: 14
+
+  # ② 前端逻辑：jsdom 黑盒驱动 DOM + 样式表完整性
   smoke:
     name: 逻辑冒烟 (jsdom)
     runs-on: ubuntu-latest
@@ -14,37 +42,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 安装依赖
-        run: npm install --no-audit --no-fund
+      - run: npm install --no-audit --no-fund
         working-directory: tools
       - name: 跑逻辑冒烟
         shell: bash
         run: node smoke.mjs 2>&1 | tee smoke.log
         working-directory: tools
-      - name: 上传日志
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: smoke-log
           path: tools/smoke.log
           retention-days: 14
 
-  # ② 浏览器检查：真实 Chromium（x86_64 runner，规避本机 aarch64 的指令集风险）
+  # ③ 真实浏览器：布局 / 形状 / 韧性 / SSE / 无障碍 / 端到端
   browser:
-    name: 浏览器检查 (Chromium)
+    name: 浏览器与端到端 (Chromium)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 安装依赖
-        run: npm install --no-audit --no-fund
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - run: npm install --no-audit --no-fund
         working-directory: tools
       - name: 安装 Chromium
         run: npx playwright install --with-deps chromium
         working-directory: tools
-      - name: 跑布局 / 形状 / 韧性 / SSE / 无障碍
+      - name: 跑全部浏览器检查（含对真实 Go 后端的端到端）
         shell: bash
         run: node run.mjs 2>&1 | tee visual.log
         working-directory: tools

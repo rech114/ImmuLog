@@ -12,8 +12,10 @@ import shapes from './check/shapes.mjs';
 import resilience from './check/resilience.mjs';
 import sse from './check/sse.mjs';
 import a11y from './check/a11y.mjs';
+import e2e from './check/e2e.mjs';
 
-const CHECKS = [layout, shapes, resilience, sse, a11y];
+// 前五个跑在 mock / 内存服务上；e2e 打真实 Go 二进制（需要 PATH 里有 go）
+const CHECKS = [layout, shapes, resilience, sse, a11y, e2e];
 
 await mkdir(OUT, { recursive: true });
 
