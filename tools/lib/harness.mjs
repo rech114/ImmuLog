@@ -69,20 +69,26 @@ export async function session(browser, vp = VIEWPORTS[0]) {
 export function collector(name) {
   const results = [];
   const issues = [];
+  let failures = 0;
   return {
     name,
     results,
     issues,
     ok(cond, label, detail) {
       results.push({ label, pass: !!cond });
-      if (!cond) issues.push({ kind: 'assert', check: name, label, ...(detail ? { detail } : {}) });
+      if (!cond) {
+        failures += 1;
+        issues.push({ kind: 'assert', check: name, label, ...(detail ? { detail } : {}) });
+      }
       return !!cond;
     },
+    // fail 必须计入失败 —— 否则「检查崩了」会被当成通过（CI 假绿）。
     fail(kind, detail) {
+      failures += 1;
       issues.push({ kind, check: name, ...detail });
     },
     get passed() { return results.filter((r) => r.pass).length; },
-    get failed() { return results.filter((r) => !r.pass).length; },
+    get failed() { return results.filter((r) => !r.pass).length + failures; },
   };
 }
 

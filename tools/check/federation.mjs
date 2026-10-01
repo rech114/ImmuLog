@@ -6,6 +6,7 @@
 //   · 中转站被改写时，本机拒绝覆盖并留下告警
 //   · 快照能被独立复算
 
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +24,16 @@ async function waitForText(page, text, timeout = 20000) {
     (t) => [...document.querySelectorAll('.msg .text')].some((e) => e.textContent.includes(t)),
     text, { timeout },
   );
+}
+
+/** 判断 a 是否为 b 的祖先；git 用非零退出表示"否"，不是错误。 */
+function isAncestor(dir, a, b) {
+  try {
+    execFileSync('git', ['-C', dir, 'merge-base', '--is-ancestor', a, b], { env: GIT_ENV, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default async function federation(browser, _base, c) {
@@ -58,14 +69,21 @@ export default async function federation(browser, _base, c) {
     });
     if (!healthA) return;
 
-    const body = '联邦冒烟 · ' + Math.random().toString(36).slice(2, 8);
-    const sent = await (await fetch(A.base + '/api/commit', {
+    const post = async (base, body) => (await fetch(base + '/api/commit', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ kind: 'msg', body }),
     })).json();
-    c.ok(/^[0-9a-f]{40}$/.test(sent.oid || ''), `A 发出消息（${String(sent.oid).slice(0, 8)}…）`);
-    c.ok(sent.seq === 1, `A 的序号是 1（实际 ${sent.seq}）`);
+
+    // 发两条：链上必须有一个"分叉点"，否则从链尾分叉出来的只是正常追加，
+    // 根本构不成"引用重写"。
+    const body = '联邦冒烟 · ' + Math.random().toString(36).slice(2, 8);
+    const first = await post(A.base, body);
+    c.ok(/^[0-9a-f]{40}$/.test(first.oid || ''), `A 发出第一条（${String(first.oid).slice(0, 8)}…）`);
+    c.ok(first.seq === 1, `A 的序号从 1 开始（实际 ${first.seq}）`);
+
+    const sent = await post(A.base, '第二条：给链留一个分叉点');
+    c.ok(sent.seq === 2, `A 的序号递增到 2（实际 ${sent.seq}）`);
 
     // 保证中转站拿到 A 的 feed（本机 receive-pack 不可用，详见 README）
     publish(hub, aRepo);
@@ -119,23 +137,26 @@ export default async function federation(browser, _base, c) {
     c.ok(anchored.includes('refs/anchors/'), `B 产生了锚定（${anchored.split('\n')[0]}）`);
 
     // ── 5) 攻击者改写中转站上的 A feed ──────────────────────────
-    const first = git(aRepo, 'rev-list', '--max-parents=0', aRef);
-    const tree = git(aRepo, 'hash-object', '-w', '-t', 'tree', '--stdin');
-    // 从根提交另起一条平行链
-    const forged = gitIn(aRepo, '被改写的历史\n\nImmutalk-Kind: msg\nImmutalk-Seq: 1\n',
-      'commit-tree', tree);
-    c.ok(forged !== sent.oid, '前置条件：伪造的是另一个对象');
+    //
+    // 从**第一条**分叉，得到第二条的兄弟 —— 这样伪造的链尾与本机链尾
+    // 互不构成祖先关系，才是真正的"引用重写"。
+    //
+    // 在克隆里造链再发布：伪造的提交必须是**可达的**，否则 `refs/feeds/*`
+    // 的传输带不走它（hub 是另一个仓库，拿不到游离对象）。
+    const liarDir = join(work, 'liar.git');
+    git(work, 'clone', '--bare', '--quiet', aRepo, liarDir);
+    git(liarDir, 'config', 'user.name', 'alice');
+    git(liarDir, 'config', 'user.email', 'alice@example.com');
 
-    git(hub, 'update-ref', aRef, forged); // 中转站被改写
+    const tree = git(liarDir, 'hash-object', '-w', '-t', 'tree', '--stdin');
+    const forged = gitIn(liarDir, '被改写的历史\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n',
+      'commit-tree', tree, '-p', first.oid);
+    c.ok(forged !== sent.oid, '前置条件：伪造的是另一个对象');
+    git(liarDir, 'update-ref', aRef, forged);
+    publish(hub, liarDir); // 中转站被改写
     c.ok(git(hub, 'rev-parse', aRef) === forged, '中转站已指向被改写的历史');
 
-    // 再发一条无关消息，逼 B 在下一轮同步里撞上矛盾
-    await fetch(A.base + '/api/commit', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kind: 'msg', body: '第二条' }),
-    });
-    publish(hub, aRepo);
-
+    // 不再重新发布诚实链 —— 否则中转站立刻被覆盖回诚实版本，B 根本撞不上矛盾
     await page.waitForSelector('.alarm', { timeout: 25000 });
     const alarm = await page.evaluate(() => ({
       title: document.querySelector('.alarm h6')?.textContent ?? '',
@@ -144,9 +165,17 @@ export default async function federation(browser, _base, c) {
     c.ok(alarm.title.includes('改写'), `B 报出改写告警：「${alarm.title}」`);
     c.ok(alarm.shape.includes('burst'), '告警形状为 burst');
 
-    // 核心：B 的可信状态与见证锚不得被带动
-    c.ok(git(bRepo, 'rev-parse', aRef) === bTip, 'B 的本地副本拒绝被覆盖（保留原样）');
-    c.ok(git(bRepo, 'rev-parse', `refs/witness/${healthA.feed}`) === bWitness, 'B 的见证锚纹丝不动');
+    // ── 6) 核心判据：本机状态必须完好无损 ───────────────────────
+    const afterTip = git(bRepo, 'rev-parse', aRef);
+    const afterWitness = git(bRepo, 'rev-parse', `refs/witness/${healthA.feed}`);
+    c.ok(afterTip === sent.oid, 'B 的本地副本拒绝被覆盖（仍是诚实链尾）');
+    c.ok(afterWitness === sent.oid, 'B 的见证锚纹丝不动');
+
+    c.ok(!isAncestor(bRepo, forged, afterTip), '伪造的提交不在 B 的历史里');
+    c.ok(isAncestor(bRepo, sent.oid, afterTip), '诚实的完整历史仍在 B 手里');
+
+    const peers = (await (await fetch(B.base + '/api/snapshot')).json()).peers ?? [];
+    c.ok(peers.length === 1 && peers[0].ok === false, '对端被标为不一致');
 
     await shot(page, 'federation-alarm.png');
 
