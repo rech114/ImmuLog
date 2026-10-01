@@ -14,9 +14,9 @@ import (
 	"immulog/core/gitx"
 )
 
-// ── 夹具：现场生成 SSH 密钥，不依赖开发机环境 ─────────────────────
+// ── Fixtures: generate an SSH key on the spot, no reliance on the dev machine ──
 
-// signRepo 建一个配好 SSH 签名的仓库，返回仓库与密钥路径。
+// signRepo builds a repo configured for SSH signing and returns it with the key path.
 func signRepo(t *testing.T) (*gitx.Repo, *Store, string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -26,7 +26,7 @@ func signRepo(t *testing.T) (*gitx.Repo, *Store, string) {
 	key := filepath.Join(base, "id_ed25519")
 	sshKeygen(t, key)
 
-	// allowed_signers 让 git 能判定"这个签名有效且属于谁"
+	// allowed_signers lets git decide "this signature is valid, and whose it is"
 	allowed := filepath.Join(base, "allowed_signers")
 	pub, err := os.ReadFile(key + ".pub")
 	if err != nil {
@@ -63,16 +63,16 @@ func sshKeygen(t *testing.T, path string) {
 	}
 }
 
-// ── 签名自检 ──────────────────────────────────────────────────────
+// ── Signing self-test ───────────────────────────────────────────
 
 func TestProbeSigningReturnsFingerprint(t *testing.T) {
 	repo, _, _ := signRepo(t)
 	fp, err := ProbeSigning(context.Background(), repo)
 	if err != nil {
-		t.Fatalf("自检应通过：%v", err)
+		t.Fatalf("the self-test should pass: %v", err)
 	}
 	if !strings.HasPrefix(fp, "SHA256:") {
-		t.Fatalf("应返回密钥指纹，得到 %q", fp)
+		t.Fatalf("it should return a key fingerprint, got %q", fp)
 	}
 }
 
@@ -84,11 +84,11 @@ func TestProbeSigningWithoutKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := ProbeSigning(context.Background(), gitx.Open(dir)); !errors.Is(err, ErrNoSigningKey) {
-		t.Fatalf("未配置密钥时应返回 ErrNoSigningKey，得到 %v", err)
+		t.Fatalf("with no key configured it should return ErrNoSigningKey, got %v", err)
 	}
 }
 
-// 配了密钥但签不出来 —— 必须报错，绝不静默降级成明文。
+// A key is configured but cannot sign -- this must error, never silently degrade to plaintext.
 func TestProbeSigningWithBrokenKeyFailsLoudly(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
@@ -102,20 +102,20 @@ func TestProbeSigningWithBrokenKeyFailsLoudly(t *testing.T) {
 	rawGit(t, dir, "config", "user.signingkey", "/nonexistent/key.pub")
 
 	if _, err := ProbeSigning(context.Background(), gitx.Open(dir)); !errors.Is(err, ErrSigningBroken) {
-		t.Fatalf("密钥不可用时应返回 ErrSigningBroken，得到 %v", err)
+		t.Fatalf("an unusable key should return ErrSigningBroken, got %v", err)
 	}
 }
 
-// ── 签名真的落到了消息上 ──────────────────────────────────────────
+// ── Signatures really land on messages ──────────────────────────
 
 func TestSignedMessagesCarryVerifiableIdentity(t *testing.T) {
 	_, s, _ := signRepo(t)
 	if !s.Signed() {
-		t.Fatal("配了密钥时 Signed() 应为 true")
+		t.Fatal("with a key configured Signed() should be true")
 	}
 
 	ctx := context.Background()
-	if _, err := s.Send(ctx, "签名过的消息"); err != nil {
+	if _, err := s.Send(ctx, "a signed message"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -124,38 +124,38 @@ func TestSignedMessagesCarryVerifiableIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("应有 1 条，得到 %d", len(got))
+		t.Fatalf("expected 1, got %d", len(got))
 	}
 	if got[0].Sig != "signature valid" {
-		t.Fatalf("git 应判定签名有效，得到 %q", got[0].Sig)
+		t.Fatalf("git should judge the signature valid, got %q", got[0].Sig)
 	}
 	if got[0].Key == "" {
-		t.Fatal("应带上签名密钥指纹")
+		t.Fatal("it should carry the signing key fingerprint")
 	}
 
-	// 与 git 自己读出来的一致
+	// Consistent with what git itself reads
 	raw, _ := s.repo.Log(ctx, s.FeedRef(), 1)
 	if raw[0].Sig != "good" {
-		t.Fatalf("git 的签名状态应为 good，得到 %q", raw[0].Sig)
+		t.Fatalf("git's signature status should be good, got %q", raw[0].Sig)
 	}
 	if !strings.HasSuffix(raw[0].Key, strings.TrimPrefix(got[0].Key, "")) {
-		t.Fatalf("指纹不一致：%q vs %q", raw[0].Key, got[0].Key)
+		t.Fatalf("fingerprints differ: %q vs %q", raw[0].Key, got[0].Key)
 	}
 }
 
-// 未签名时不得谎称签过。
+// When unsigned it must not claim otherwise.
 func TestUnsignedMessagesReportNoSignature(t *testing.T) {
 	s, _ := newStore(t)
-	mustSend(t, s, "没签名的消息")
+	mustSend(t, s, "an unsigned message")
 	got, _ := s.History(context.Background(), 1)
 	if got[0].Sig != "" || got[0].Key != "" {
-		t.Fatalf("未签名时不该有签名信息：%+v", got[0])
+		t.Fatalf("an unsigned message should carry no signature info: %+v", got[0])
 	}
 }
 
-// ── 密钥链条 ──────────────────────────────────────────────────────
+// ── The key chain ───────────────────────────────────────────────
 
-// 纯函数：直接构造 RawCommit，不需要 git。
+// Pure function: construct RawCommit directly, no git needed.
 func TestCheckKeyChainRejectsUnexplainedChange(t *testing.T) {
 	prev := gitx.RawCommit{OID: "a", Key: "SHA256:old"}
 	newer := []gitx.RawCommit{{OID: "b", Key: "SHA256:attacker"}}
@@ -165,20 +165,20 @@ func TestCheckKeyChainRejectsUnexplainedChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if v.OK {
-		t.Fatal("没有轮换公告背书的密钥变更必须被判为不合法")
+		t.Fatal("a key change with no rotation notice behind it must be judged illegitimate")
 	}
 	if v.Reason != ReasonKeyChanged {
-		t.Fatalf("原因应为 %q，得到 %q", ReasonKeyChanged, v.Reason)
+		t.Fatalf("reason should be %q, got %q", ReasonKeyChanged, v.Reason)
 	}
 	if v.Witness != "SHA256:old" || v.Current != "SHA256:attacker" {
-		t.Fatalf("告警应带上新旧密钥：%+v", v)
+		t.Fatalf("the alarm should carry both keys: %+v", v)
 	}
 }
 
 func TestCheckKeyChainAllowsDeclaredRotation(t *testing.T) {
 	prev := gitx.RawCommit{OID: "a", Key: "SHA256:old"}
 	newer := []gitx.RawCommit{
-		// 公告：仍由旧密钥签（Key 不变），但声明了新密钥
+		// Notice: still signed by the old key (Key unchanged), but declaring the new one
 		{OID: "b", Key: "SHA256:old", Declared: "SHA256:new"},
 		{OID: "c", Key: "SHA256:new"},
 	}
@@ -187,51 +187,51 @@ func TestCheckKeyChainAllowsDeclaredRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !v.OK {
-		t.Fatalf("有旧密钥签名的轮换公告时应通过：%+v", v)
+		t.Fatalf("a rotation notice signed by the old key should pass: %+v", v)
 	}
 }
 
-// 公告声明了一套、实际用了另一套 —— 同样不合法。
+// The notice declares one key and a third one is used -- equally illegitimate.
 func TestCheckKeyChainRejectsMismatchedDeclaration(t *testing.T) {
 	prev := gitx.RawCommit{OID: "a", Key: "SHA256:old"}
 	newer := []gitx.RawCommit{
 		{OID: "b", Key: "SHA256:old", Declared: "SHA256:new"},
-		{OID: "c", Key: "SHA256:other"}, // 用了第三个密钥
+		{OID: "c", Key: "SHA256:other"}, // a third key
 	}
 	v, _ := CheckKeyChain(prev, newer)
 	if v.OK || v.Reason != ReasonKeyChanged {
-		t.Fatalf("声明的密钥与实际使用的不符，应判为不合法：%+v", v)
+		t.Fatalf("the declared key differs from the one used; should be illegitimate: %+v", v)
 	}
 }
 
-// 密钥不变时链条自然连续。
+// An unchanged key keeps the chain continuous by construction.
 func TestCheckKeyChainAcceptsStableKey(t *testing.T) {
 	prev := gitx.RawCommit{OID: "a", Key: "SHA256:k"}
 	newer := []gitx.RawCommit{{OID: "b", Key: "SHA256:k"}, {OID: "c", Key: "SHA256:k"}}
 	if v, _ := CheckKeyChain(prev, newer); !v.OK {
-		t.Fatalf("密钥不变应通过：%+v", v)
+		t.Fatalf("an unchanged key should pass: %+v", v)
 	}
 }
 
-// 未签名的历史无法被任何东西背书：首次出现的密钥被接受，但要如实标注。
+// An unsigned history has nothing to vouch for it: the first key seen is accepted but must be labelled honestly.
 func TestCheckKeyChainAcceptsFirstKeyOnUnsignedHistory(t *testing.T) {
-	prev := gitx.RawCommit{OID: "a"} // 未签名
+	prev := gitx.RawCommit{OID: "a"} // unsigned
 	newer := []gitx.RawCommit{{OID: "b", Key: "SHA256:first"}}
 	if v, _ := CheckKeyChain(prev, newer); !v.OK {
-		t.Fatalf("未签名前缀之后的首次签名应被接受：%+v", v)
+		t.Fatalf("the first signature after an unsigned prefix should be accepted: %+v", v)
 	}
 }
 
-// ── 轮换公告 ──────────────────────────────────────────────────────
+// ── Rotation notices ────────────────────────────────────────────
 
 func TestDeclareKeyChainsAndDeclares(t *testing.T) {
 	_, s, _ := signRepo(t)
 	ctx := context.Background()
 
-	mustSend(t, s, "旧密钥下的消息")
+	mustSend(t, s, "a message under the old key")
 	before, _ := s.CurrentKey(ctx)
 	if before == "" {
-		t.Fatal("前置条件：应先有签名密钥")
+		t.Fatal("precondition: there should already be a signing key")
 	}
 
 	ann, err := s.DeclareKey(ctx, "SHA256:brand-new-key")
@@ -239,63 +239,63 @@ func TestDeclareKeyChainsAndDeclares(t *testing.T) {
 		t.Fatalf("DeclareKey: %v", err)
 	}
 	if ann.Kind != KindRotate {
-		t.Fatalf("应是轮换公告：%+v", ann)
+		t.Fatalf("it should be a rotation notice: %+v", ann)
 	}
 
 	raw, _ := s.repo.Log(ctx, s.FeedRef(), 1)
 	if raw[0].Declared != "SHA256:brand-new-key" {
-		t.Fatalf("公告应声明新密钥，trailer = %q", raw[0].Declared)
+		t.Fatalf("the notice should declare the new key, trailer = %q", raw[0].Declared)
 	}
-	// 公告本身由**旧**密钥签名
+	// The notice itself is signed by the **old** key
 	if raw[0].Key != before {
-		t.Fatalf("公告应由旧密钥签名：%q vs %q", raw[0].Key, before)
+		t.Fatalf("the notice should be signed by the old key: %q vs %q", raw[0].Key, before)
 	}
 
-	// 链条校验：公告 + 之后用新密钥的提交 —— 合法
+	// Chain check: notice plus a later commit under the new key -- legitimate
 	newer := []gitx.RawCommit{
 		raw[0],
 		{OID: "next", Key: "SHA256:brand-new-key"},
 	}
 	if v, _ := CheckKeyChain(gitx.RawCommit{OID: "prev", Key: before}, newer); !v.OK {
-		t.Fatalf("合法轮换应通过链条校验：%+v", v)
+		t.Fatalf("a legitimate rotation should pass the chain check: %+v", v)
 	}
 }
 
 func TestDeclareKeyRequiresSigning(t *testing.T) {
-	s, _ := newStore(t) // 没配密钥
-	mustSend(t, s, "占位")
+	s, _ := newStore(t) // no key configured
+	mustSend(t, s, "placeholder")
 	if _, err := s.DeclareKey(context.Background(), "SHA256:x"); !errors.Is(err, ErrNoSigningKey) {
-		t.Fatalf("未配置密钥时应拒绝轮换，得到 %v", err)
+		t.Fatalf("rotation should be refused with no key configured, got %v", err)
 	}
 }
 
 func TestDeclareKeyRejectsSameKey(t *testing.T) {
 	_, s, _ := signRepo(t)
 	ctx := context.Background()
-	mustSend(t, s, "起个头")
+	mustSend(t, s, "a start")
 	cur, _ := s.CurrentKey(ctx)
 
 	if _, err := s.DeclareKey(ctx, cur); err == nil {
-		t.Fatal("新旧密钥相同应被拒")
+		t.Fatal("the same old and new key should be refused")
 	}
 	if _, err := s.DeclareKey(ctx, "  "); err == nil {
-		t.Fatal("空的新密钥应被拒")
+		t.Fatal("an empty new key should be refused")
 	}
 }
 
-// 轮换公告是结构性事件，不该出现在时间线里。
+// A rotation notice is a structural event and should not appear in the timeline.
 func TestRotateIsNotATimelineEvent(t *testing.T) {
 	_, s, _ := signRepo(t)
 	ctx := context.Background()
-	mustSend(t, s, "一条消息")
+	mustSend(t, s, "one message")
 	if _, err := s.DeclareKey(ctx, "SHA256:next-key"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.History(ctx, 10)
 	if len(got) != 2 {
-		t.Fatalf("链上应有 2 条，得到 %d", len(got))
+		t.Fatalf("the chain should hold 2, got %d", len(got))
 	}
 	if got[0].Kind != KindRotate {
-		t.Fatalf("链尾应是轮换公告：%+v", got[0])
+		t.Fatalf("the tip should be a rotation notice: %+v", got[0])
 	}
 }

@@ -9,7 +9,8 @@ import (
 	"testing"
 )
 
-// recordingPublisher 记录被交给外部服务的摘要，模拟一个外部的公证方。
+// recordingPublisher records the digests handed to an external service,
+// standing in for a notary.
 type recordingPublisher struct {
 	got  []string
 	body string
@@ -24,49 +25,50 @@ func (p *recordingPublisher) Publish(_ context.Context, digest string) (string, 
 	return p.body, nil
 }
 
-// ── 锚定链 ────────────────────────────────────────────────────────
+// ── The anchor chain ────────────────────────────────────────────
 
-// 每个锚定的 parent 是上一个 —— 想改写历史里的某个锚定，必须连带改写它之后的全部。
+// Each anchor's parent is the previous one: rewriting an anchor in the middle
+// requires rewriting every anchor after it.
 func TestAnchorChainLinksToPrevious(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
 	s := storeOf(t, repo, "alice")
 
-	mustSend(t, s, "一")
+	mustSend(t, s, "one")
 	a1, err := AnchorNow(ctx, repo, nil, false)
 	if err != nil {
 		t.Fatalf("AnchorNow: %v", err)
 	}
 	if a1.Seq != 1 || a1.Prev != "" {
-		t.Fatalf("首个锚定的形状不对：%+v", a1)
+		t.Fatalf("the first anchor has the wrong shape: %+v", a1)
 	}
 
-	mustSend(t, s, "二")
+	mustSend(t, s, "two")
 	a2, err := AnchorNow(ctx, repo, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a2.Seq != 2 || a2.Prev != a1.OID {
-		t.Fatalf("第二个锚定应指向第一个：%+v", a2)
+		t.Fatalf("the second anchor should point at the first: %+v", a2)
 	}
-	// 到 git 层面确认父子关系真的落下了
+	// Confirm at the git level that the parent link really landed
 	if parent := rawGit(t, repo.Dir, "rev-parse", a2.OID+"^"); parent != a1.OID {
-		t.Fatalf("git 里的 parent 应是 %s，得到 %s", a1.OID, parent)
+		t.Fatalf("the git parent should be %s, got %s", a1.OID, parent)
 	}
-	// 状态变了，摘要必须跟着变
+	// State changed, so the digest must change with it
 	if a1.Snapshot == a2.Snapshot {
-		t.Fatal("链尾前进后快照摘要必须变化")
+		t.Fatal("the snapshot digest must change once the tip advances")
 	}
 }
 
 func TestAnchorHeadReadsBackLatest(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
 
-	// 从未锚定过 → 零值，不是错误
+	// Never anchored -> the zero value, not an error
 	if a, err := AnchorHead(ctx, repo); err != nil || a.OID != "" {
-		t.Fatalf("未锚定时应返回零值：%+v %v", a, err)
+		t.Fatalf("with no anchor it should return the zero value: %+v %v", a, err)
 	}
 
 	want, _ := AnchorNow(ctx, repo, nil, false)
@@ -75,39 +77,41 @@ func TestAnchorHeadReadsBackLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.OID != want.OID || got.Snapshot != want.Snapshot || got.Seq != 1 {
-		t.Fatalf("读回的锚定不符：%+v vs %+v", got, want)
+		t.Fatalf("the anchor read back does not match: %+v vs %+v", got, want)
 	}
 	if got.At.IsZero() {
-		t.Error("时间戳应能从 trailer 解析回来")
+		t.Error("the timestamp should parse back out of the trailer")
 	}
 }
 
-// 快照内容本身要落进锚定提交 —— 事后任何人拿到这个对象就能复算摘要。
+// The snapshot content itself must land in the anchor commit, so anyone who
+// obtains that object later can recompute the digest.
 func TestAnchorCarriesSnapshotContent(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
 	s := storeOf(t, repo, "alice")
-	mustSend(t, s, "一")
+	mustSend(t, s, "one")
 
 	a, _ := AnchorNow(ctx, repo, nil, false)
 	body := rawGit(t, repo.Dir, "log", "-1", "--format=%B", a.OID)
 
 	if !strings.Contains(body, FeedRef(s.Pub())) {
-		t.Fatalf("锚定正文应包含 feed 列表，实际：%q", body)
+		t.Fatalf("the anchor body should contain the feed list, actually: %q", body)
 	}
-	// 再算一次摘要必须与锚定时一致 —— 这就是"可复算"
+	// Recomputing the digest must match the anchored one -- that is what
+	// "recomputable" means
 	snap, _ := Capture(ctx, repo)
 	if snap.Digest != a.Snapshot {
-		t.Fatalf("复算摘要不一致：%q vs %q", snap.Digest, a.Snapshot)
+		t.Fatalf("recomputed digest differs: %q vs %q", snap.Digest, a.Snapshot)
 	}
 }
 
-// ── 外部锚定 ──────────────────────────────────────────────────────
+// ── External anchoring ──────────────────────────────────────────
 
 func TestAnchorPublishesExternally(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
 
 	pub := &recordingPublisher{body: "ots-receipt-xyz"}
 	a, err := AnchorNow(ctx, repo, pub, false)
@@ -116,64 +120,67 @@ func TestAnchorPublishesExternally(t *testing.T) {
 	}
 
 	if len(pub.got) != 1 {
-		t.Fatalf("外部服务应被调用一次，实际 %d 次", len(pub.got))
+		t.Fatalf("the external service should be called once, actually %d times", len(pub.got))
 	}
 	if pub.got[0] != a.Snapshot {
-		t.Fatalf("交给外部的应是快照摘要：%q vs %q", pub.got[0], a.Snapshot)
+		t.Fatalf("what is handed out should be the snapshot digest: %q vs %q", pub.got[0], a.Snapshot)
 	}
 	if a.External != "ots-receipt-xyz" {
-		t.Fatalf("回执应被记录：%q", a.External)
+		t.Fatalf("the receipt should be recorded: %q", a.External)
 	}
 
-	// 回执必须落到链上，事后可查 —— 这才是"外部锚定"的意义
+	// The receipt must land on the chain and stay auditable -- that is the point
+	// of external anchoring
 	vals, err := repo.TrailerValue(ctx, a.OID, "ImmuLog-External")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if vals[0] != "ots-receipt-xyz" {
-		t.Fatalf("回执未落到链上：%q", vals[0])
+		t.Fatalf("the receipt did not land on the chain: %q", vals[0])
 	}
 }
 
-// 外部不可用不能阻断本地锚定 —— 本地链本身已经有价值。
+// An unavailable external service must not block local anchoring: the local
+// chain already has value.
 func TestAnchorSurvivesPublisherFailure(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
 
 	pub := &recordingPublisher{err: errors.New("503 service unavailable")}
 	a, err := AnchorNow(ctx, repo, pub, false)
 	if err != nil {
-		t.Fatalf("外部失败不应让锚定失败：%v", err)
+		t.Fatalf("an external failure must not fail the anchoring: %v", err)
 	}
 	if a.External != "" {
-		t.Fatalf("失败时不应记录回执：%q", a.External)
+		t.Fatalf("no receipt should be recorded on failure: %q", a.External)
 	}
 	if a.OID == "" || a.Snapshot == "" {
-		t.Fatalf("本地锚定仍应成立：%+v", a)
+		t.Fatalf("the local anchor should still hold: %+v", a)
 	}
 }
 
-// 没有配置外部服务时，锚定照样工作，只是"不外部"。
+// With no external service configured, anchoring still works -- it is just not
+// external.
 func TestAnchorWithoutPublisher(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
 
 	a, err := AnchorNow(ctx, repo, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a.External != "" || a.OID == "" {
-		t.Fatalf("无外部服务时应得到一条本地锚定：%+v", a)
+		t.Fatalf("with no external service there should still be a local anchor: %+v", a)
 	}
 }
 
-// 回执里的控制字符不得破坏 trailer 结构。
+// Control characters in a receipt must not break the trailer structure.
 func TestAnchorSanitizesReceipt(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
 
 	pub := &recordingPublisher{body: "ok\x1f\x1e\nImmuLog-Snapshot: forged"}
 	a, err := AnchorNow(ctx, repo, pub, false)
@@ -181,11 +188,11 @@ func TestAnchorSanitizesReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.ContainsAny(a.External, "\x1f\x1e") {
-		t.Fatalf("回执里的控制字符应被清掉：%q", a.External)
+		t.Fatalf("control characters in the receipt should be stripped: %q", a.External)
 	}
-	// 摘要不得被回执里的伪造 trailer 带偏
+	// The digest must not be swayed by a forged trailer inside the receipt
 	got, _ := AnchorHead(ctx, repo)
 	if got.Snapshot != a.Snapshot {
-		t.Fatalf("摘要被注入影响：%q vs %q", got.Snapshot, a.Snapshot)
+		t.Fatalf("the digest was affected by injection: %q vs %q", got.Snapshot, a.Snapshot)
 	}
 }

@@ -24,7 +24,7 @@ import (
 	"immulog/core/gitx"
 )
 
-// ── 夹具 ──────────────────────────────────────────────────────────
+// ── Fixtures ────────────────────────────────────────────────────
 
 func rawGit(t *testing.T, dir, stdin string, args ...string) string {
 	t.Helper()
@@ -40,7 +40,7 @@ func rawGit(t *testing.T, dir, stdin string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// newServer 起一个真实 HTTP 服务（不是内存 handler）—— SSE 需要真的能流式写。
+// newServer starts a real HTTP service (not an in-memory handler) -- SSE needs to genuinely stream.
 func newServer(t *testing.T) (*httptest.Server, *feed.Store, string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -92,7 +92,7 @@ type sseEvent struct {
 	Retry string
 }
 
-// readEvents 读 SSE 流直到集齐 n 条带 event 的帧，或超时。
+// readEvents reads the SSE stream until n frames carrying an event have arrived, or it times out.
 func readEvents(t *testing.T, r io.ReadCloser, n int, timeout time.Duration) []sseEvent {
 	t.Helper()
 	defer r.Close()
@@ -132,11 +132,11 @@ func readEvents(t *testing.T, r io.ReadCloser, n int, timeout time.Duration) []s
 	select {
 	case r := <-done:
 		if len(r.evs) < n {
-			t.Fatalf("期望 %d 条事件，只拿到 %d：%+v", n, len(r.evs), r.evs)
+			t.Fatalf("expected %d events, only got %d: %+v", n, len(r.evs), r.evs)
 		}
 		return r.evs
 	case <-time.After(timeout):
-		t.Fatalf("等待 %d 条事件超时", n)
+		t.Fatalf("timed out waiting for %d events", n)
 		return nil
 	}
 }
@@ -148,26 +148,26 @@ func openStream(t *testing.T, base, query string) (*http.Response, []sseEvent, s
 		t.Fatalf("GET /api/stream: %v", err)
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
-		t.Fatalf("Content-Type 应为 text/event-stream，得到 %q", ct)
+		t.Fatalf("Content-Type should be text/event-stream, got %q", ct)
 	}
 	return resp, nil, resp.Header.Get("X-Accel-Buffering")
 }
 
-// ── 写入口 ────────────────────────────────────────────────────────
+// ── Write entry ─────────────────────────────────────────────────
 
 func TestCommitReturnsOIDAndSeq(t *testing.T) {
 	srv, _, _ := newServer(t)
 
-	resp, body := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "你好"})
+	resp, body := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "hello"})
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("状态码 = %d，期望 201（%v）", resp.StatusCode, body)
+		t.Fatalf("status = %d, expected 201 (%v)", resp.StatusCode, body)
 	}
 	oid, _ := body["oid"].(string)
 	if len(oid) != 40 {
-		t.Fatalf("oid 形状不对：%v", body["oid"])
+		t.Fatalf("malformed oid: %v", body["oid"])
 	}
 	if body["seq"].(float64) != 1 {
-		t.Fatalf("seq = %v，期望 1", body["seq"])
+		t.Fatalf("seq = %v, expected 1", body["seq"])
 	}
 }
 
@@ -179,7 +179,7 @@ func TestCommitRejectsBadJSON(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("状态码 = %d，期望 400", resp.StatusCode)
+		t.Fatalf("status = %d, expected 400", resp.StatusCode)
 	}
 }
 
@@ -187,14 +187,14 @@ func TestCommitRejectsEmptyBody(t *testing.T) {
 	srv, store, _ := newServer(t)
 	resp, body := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "   "})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("状态码 = %d，期望 400（%v）", resp.StatusCode, body)
+		t.Fatalf("status = %d, expected 400 (%v)", resp.StatusCode, body)
 	}
 	if body["error"] != "empty_body" {
-		t.Fatalf("错误码 = %v", body["error"])
+		t.Fatalf("error code = %v", body["error"])
 	}
-	// 必须真的没落盘 —— 前端也会拦，但服务端不能依赖前端
+	// It must genuinely not be stored -- the frontend blocks it too, but the server may not rely on the frontend
 	if n, _ := store.History(context.Background(), 10); len(n) != 0 {
-		t.Fatalf("空消息不得落盘，链上却有 %d 条", len(n))
+		t.Fatalf("an empty message must not be stored, yet the chain holds %d", len(n))
 	}
 }
 
@@ -202,28 +202,28 @@ func TestCommitRejectsTooLong(t *testing.T) {
 	srv, _, _ := newServer(t)
 	resp, body := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": strings.Repeat("x", feed.MaxBody+10)})
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("状态码 = %d，期望 413（%v）", resp.StatusCode, body)
+		t.Fatalf("status = %d, expected 413 (%v)", resp.StatusCode, body)
 	}
 	if body["error"] != "too_long" {
-		t.Fatalf("错误码 = %v", body["error"])
+		t.Fatalf("error code = %v", body["error"])
 	}
 }
 
 func TestRetractViaHTTP(t *testing.T) {
 	srv, store, _ := newServer(t)
-	_, first := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "说错了"})
+	_, first := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "got it wrong"})
 	target := first["oid"].(string)
 
 	resp, body := postCommit(t, srv.URL, map[string]any{
-		"kind": "retract", "retracts": target, "reason": "发错频道",
+		"kind": "retract", "retracts": target, "reason": "wrong channel",
 	})
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("撤回应成功：%d %v", resp.StatusCode, body)
+		t.Fatalf("the retraction should succeed: %d %v", resp.StatusCode, body)
 	}
-	// 撤回是追加：链上应有 2 条，原消息仍在
+	// A retraction appends: the chain should hold 2 and the original is still there
 	hist, _ := store.History(context.Background(), 10)
 	if len(hist) != 2 {
-		t.Fatalf("链应增长到 2 条，得到 %d", len(hist))
+		t.Fatalf("the chain should grow to 2, got %d", len(hist))
 	}
 }
 
@@ -231,14 +231,14 @@ func TestRetractWithoutTargetIsRejected(t *testing.T) {
 	srv, _, _ := newServer(t)
 	resp, body := postCommit(t, srv.URL, map[string]any{"kind": "retract", "reason": "x"})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("状态码 = %d，期望 400（客户端错误不该是 500）", resp.StatusCode)
+		t.Fatalf("status = %d, expected 400 (a client error is not a 500)", resp.StatusCode)
 	}
 	if body["error"] != "missing_target" {
-		t.Fatalf("错误码 = %v", body["error"])
+		t.Fatalf("error code = %v", body["error"])
 	}
 }
 
-// ── 安全契约：CAS 失败必须原样上报 ────────────────────────────────
+// ── Security contract: a CAS failure must be surfaced verbatim ──
 
 func TestCommitStatusMapping(t *testing.T) {
 	cases := []struct {
@@ -247,32 +247,32 @@ func TestCommitStatusMapping(t *testing.T) {
 		code int
 		errc string
 	}{
-		{"成功", nil, 0, ""},
-		{"CAS 冲突", fmt.Errorf("包装过的: %w", gitx.ErrCASFailed), http.StatusConflict, "cas_failed"},
-		{"超长", feed.ErrTooLong, http.StatusRequestEntityTooLarge, "too_long"},
-		{"空正文", feed.ErrEmpty, http.StatusBadRequest, "empty_body"},
-		{"缺撤回目标", feed.ErrNoTarget, http.StatusBadRequest, "missing_target"},
-		{"目标格式非法", feed.ErrBadTarget, http.StatusBadRequest, "bad_target"},
-		{"不是自己的消息", feed.ErrNotMine, http.StatusForbidden, "not_your_message"},
-		{"其它", errors.New("boom"), http.StatusInternalServerError, "commit_failed"},
+		{"success", nil, 0, ""},
+		{"CAS conflict", fmt.Errorf("wrapped: %w", gitx.ErrCASFailed), http.StatusConflict, "cas_failed"},
+		{"too long", feed.ErrTooLong, http.StatusRequestEntityTooLarge, "too_long"},
+		{"empty body", feed.ErrEmpty, http.StatusBadRequest, "empty_body"},
+		{"missing target", feed.ErrNoTarget, http.StatusBadRequest, "missing_target"},
+		{"malformed target", feed.ErrBadTarget, http.StatusBadRequest, "bad_target"},
+		{"not your message", feed.ErrNotMine, http.StatusForbidden, "not_your_message"},
+		{"other", errors.New("boom"), http.StatusInternalServerError, "commit_failed"},
 	}
 	for _, c := range cases {
 		code, errc := commitStatus(c.err)
 		if code != c.code || errc != c.errc {
-			t.Errorf("%s：得到 (%d,%q)，期望 (%d,%q)", c.name, code, errc, c.code, c.errc)
+			t.Errorf("%s: got (%d,%q), expected (%d,%q)", c.name, code, errc, c.code, c.errc)
 		}
 	}
-	// 真实场景里 CAS 错误一定被包装过，errors.Is 必须能穿透
+	// In reality a CAS error is always wrapped; errors.Is has to see through it
 	if code, _ := commitStatus(&gitx.Error{Code: 128}); code != http.StatusInternalServerError {
-		t.Error("普通 git 错误不应被当成 CAS 冲突")
+		t.Error("an ordinary git error must not be mistaken for a CAS conflict")
 	}
 }
 
-// ── 下行 ──────────────────────────────────────────────────────────
+// ── Downstream ──────────────────────────────────────────────────
 
 func TestStreamReplaysHistoryThenHello(t *testing.T) {
 	srv, _, _ := newServer(t)
-	for _, b := range []string{"一", "二", "三"} {
+	for _, b := range []string{"one", "two", "three"} {
 		postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": b})
 	}
 
@@ -284,30 +284,30 @@ func TestStreamReplaysHistoryThenHello(t *testing.T) {
 		t.Fatalf("Content-Type = %q", resp.Header.Get("Content-Type"))
 	}
 	if resp.Header.Get("X-Accel-Buffering") != "no" {
-		t.Error("应下发 X-Accel-Buffering: no，否则反代会缓冲")
+		t.Error("it should send X-Accel-Buffering: no, or a reverse proxy will buffer")
 	}
 	if resp.Header.Get("Last-Event-ID") != "" {
-		t.Error("不应主动下发 Last-Event-ID")
+		t.Error("it should not proactively send Last-Event-ID")
 	}
 
 	evs := readEvents(t, resp.Body, 4, 5*time.Second)
-	// 历史按从旧到新回放
-	if evs[0].Type != "msg" || evs[0].Data["body"] != "一" {
-		t.Fatalf("回放顺序错误：%+v", evs[0])
+	// History replays oldest first
+	if evs[0].Type != "msg" || evs[0].Data["body"] != "one" {
+		t.Fatalf("wrong replay order: %+v", evs[0])
 	}
-	if evs[2].Data["body"] != "三" {
-		t.Fatalf("回放顺序错误：%+v", evs[2])
+	if evs[2].Data["body"] != "three" {
+		t.Fatalf("wrong replay order: %+v", evs[2])
 	}
-	// 事件 id 就是 commit OID —— 断线续传的游标
+	// The event id is the commit OID -- the resume cursor
 	if len(evs[0].ID) != 40 {
-		t.Fatalf("事件 id 应是 40 位对象名，得到 %q", evs[0].ID)
+		t.Fatalf("the event id should be a 40-char object name, got %q", evs[0].ID)
 	}
-	// 回放完毕切实时
+	// Replay finished, now live
 	if evs[3].Type != "hello" {
-		t.Fatalf("最后应是 hello，得到 %q", evs[3].Type)
+		t.Fatalf("the last one should be hello, got %q", evs[3].Type)
 	}
 	if evs[3].Data["signed"] != false {
-		t.Error("未配置签名密钥时 signed 应为 false")
+		t.Error("with no signing key signed should be false")
 	}
 }
 
@@ -318,35 +318,35 @@ func TestStreamDeliversLiveMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 空 feed：只有 hello
+	// Empty feed: only hello
 	readEvents(t, resp.Body, 1, 5*time.Second)
 
-	// 另开一条流收实时事件
+	// Open another stream to catch live events
 	resp2, err := http.Get(srv.URL + "/api/stream")
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "实时消息"})
+		postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "a live message"})
 	}()
 	evs := readEvents(t, resp2.Body, 2, 5*time.Second)
-	if evs[1].Type != "msg" || evs[1].Data["body"] != "实时消息" {
-		t.Fatalf("实时事件不正确：%+v", evs[1])
+	if evs[1].Type != "msg" || evs[1].Data["body"] != "a live message" {
+		t.Fatalf("the live event is wrong: %+v", evs[1])
 	}
 }
 
-// Last-Event-ID 是断线续传的全部机制 —— 必须精确只补缺口。
+// Last-Event-ID is the entire resume mechanism -- it must fill exactly the gap.
 func TestStreamResumeFromLastEventID(t *testing.T) {
 	srv, _, _ := newServer(t)
 	var oids []string
-	for _, b := range []string{"一", "二", "三"} {
+	for _, b := range []string{"one", "two", "three"} {
 		_, body := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": b})
 		oids = append(oids, body["oid"].(string))
 	}
 
 	req, _ := http.NewRequest("GET", srv.URL+"/api/stream", nil)
-	req.Header.Set("Last-Event-ID", oids[1]) // 客户端说：我已经收到第二条了
+	req.Header.Set("Last-Event-ID", oids[1]) // the client says: I already have the second one
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -354,27 +354,27 @@ func TestStreamResumeFromLastEventID(t *testing.T) {
 
 	evs := readEvents(t, resp.Body, 2, 5*time.Second)
 	if len(evs) != 2 {
-		t.Fatalf("应只补 1 条消息 + hello，得到 %d 条", len(evs))
+		t.Fatalf("it should send only 1 message + hello, got %d", len(evs))
 	}
-	if evs[0].Data["body"] != "三" {
-		t.Fatalf("应只续传「三」，得到 %+v", evs[0].Data)
+	if evs[0].Data["body"] != "three" {
+		t.Fatalf("it should only resume 'three', got %+v", evs[0].Data)
 	}
 	if evs[1].Type != "hello" {
-		t.Fatalf("第二条应是 hello，得到 %q", evs[1].Type)
+		t.Fatalf("the second should be hello, got %q", evs[1].Type)
 	}
 }
 
-// 篡改后连上来的客户端，第一眼就该看到告警。
+// A client connecting after tampering should see the alarm first thing.
 func TestStreamAlarmsOnTamperedHistory(t *testing.T) {
 	srv, store, dir := newServer(t)
 	postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "a"})
 	_, second := postCommit(t, srv.URL, map[string]any{"kind": "msg", "body": "b"})
 	head := second["oid"].(string)
 
-	// 外部攻击者：从 a 另起一条平行链并强推
+	// External attacker: a parallel chain from a, force-pushed
 	parent := rawGit(t, dir, "", "rev-parse", head+"^")
 	tree := rawGit(t, dir, "", "hash-object", "-w", "-t", "tree", "--stdin")
-	forged := rawGit(t, dir, "伪造\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n", "commit-tree", tree, "-p", parent)
+	forged := rawGit(t, dir, "forged\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n", "commit-tree", tree, "-p", parent)
 	rawGit(t, dir, "", "update-ref", feed.FeedRef(store.Pub()), forged)
 
 	resp, err := http.Get(srv.URL + "/api/stream")
@@ -383,17 +383,17 @@ func TestStreamAlarmsOnTamperedHistory(t *testing.T) {
 	}
 	evs := readEvents(t, resp.Body, 1, 5*time.Second)
 	if evs[0].Type != "alarm" {
-		t.Fatalf("第一条应是 alarm，得到 %q", evs[0].Type)
+		t.Fatalf("the first one should be alarm, got %q", evs[0].Type)
 	}
 	if evs[0].Data["reason"] != feed.ReasonRewrite {
-		t.Errorf("reason = %v，期望 rewrite", evs[0].Data["reason"])
+		t.Errorf("reason = %v, expected rewrite", evs[0].Data["reason"])
 	}
 	if evs[0].Data["local"] == "" || evs[0].Data["remote"] == "" {
-		t.Errorf("告警应带上本地/远端锚点：%+v", evs[0].Data)
+		t.Errorf("the alarm should carry local/remote anchors: %+v", evs[0].Data)
 	}
 }
 
-// ── 观测 ──────────────────────────────────────────────────────────
+// ── Observability ───────────────────────────────────────────────
 
 func TestSnapshotListsFeedRefsButNotWitness(t *testing.T) {
 	srv, store, _ := newServer(t)
@@ -413,10 +413,10 @@ func TestSnapshotListsFeedRefsButNotWitness(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(out.Refs) != 1 || out.Refs[0].Name != feed.FeedRef(store.Pub()) {
-		t.Fatalf("快照应只含 feeds 命名空间：%+v", out.Refs)
+		t.Fatalf("the snapshot should contain only the feeds namespace: %+v", out.Refs)
 	}
 	if !out.OK || out.Witness == "" {
-		t.Fatalf("正常状态下应判定一致：%+v", out)
+		t.Fatalf("in a normal state it should verify as consistent: %+v", out)
 	}
 }
 
@@ -432,16 +432,16 @@ func TestHealth(t *testing.T) {
 	var out map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	if out["feed"] != store.Pub() {
-		t.Errorf("feed = %v，期望 %v", out["feed"], store.Pub())
+		t.Errorf("feed = %v, expected %v", out["feed"], store.Pub())
 	}
 	if out["ok"] != true {
-		t.Error("health 应为 ok")
+		t.Error("health should be ok")
 	}
 }
 
-// ── 静态资源（同源，零 CORS）─────────────────────────────────────
+// ── Static assets (same-origin, zero CORS) ──────────────────────
 
-// 未配置签名密钥时，轮换必须被拒 —— 换身份的前提是本来就有可验证的身份。
+// With no signing key, rotation must be refused -- swapping identity presumes a verifiable identity exists first.
 func TestRotateRequiresSigningKey(t *testing.T) {
 	srv, _, _ := newServer(t)
 	body, _ := json.Marshal(map[string]string{"key": "SHA256:whatever"})
@@ -451,7 +451,7 @@ func TestRotateRequiresSigningKey(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("状态码 = %d，期望 409", resp.StatusCode)
+		t.Fatalf("status = %d, expected 409", resp.StatusCode)
 	}
 }
 
@@ -464,7 +464,7 @@ func TestServesEmbeddedAssets(t *testing.T) {
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Errorf("%s 状态码 = %d", path, resp.StatusCode)
+			t.Errorf("%s status = %d", path, resp.StatusCode)
 		}
 	}
 }

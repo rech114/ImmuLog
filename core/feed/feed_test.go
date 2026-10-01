@@ -15,7 +15,7 @@ import (
 	"immulog/core/gitx"
 )
 
-// ── 测试夹具 ──────────────────────────────────────────────────────
+// ── Test fixtures ───────────────────────────────────────────────
 
 func newStore(t *testing.T) (*Store, string) {
 	t.Helper()
@@ -37,8 +37,8 @@ func newStore(t *testing.T) (*Store, string) {
 	return s, dir
 }
 
-// rawGit 模拟**外部攻击者**：绕过我们的代码直接操作仓库。
-// 威胁模型里的 force push 就是这么发生的，所以测试也必须走这条路径。
+// rawGit simulates an **external attacker**: bypassing our code and operating on
+// the repository directly. That is how the force push in the threat model happens,
 func rawGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return rawGitIn(t, dir, "", args...)
@@ -67,33 +67,33 @@ func mustSend(t *testing.T, s *Store, body string) Message {
 	return m
 }
 
-// ── 发送 ──────────────────────────────────────────────────────────
+// so the tests have to take the same path.
 
 func TestSendIncrementsSeqFromOne(t *testing.T) {
 	s, _ := newStore(t)
 	for want := 1; want <= 3; want++ {
-		m := mustSend(t, s, "第 "+string(rune('0'+want))+" 条")
+		m := mustSend(t, s, "message "+string(rune('0'+want)))
 		if m.Seq != want {
-			t.Fatalf("Seq = %d，期望 %d", m.Seq, want)
+			t.Fatalf("Seq = %d, expected %d", m.Seq, want)
 		}
 		if len(m.OID) != 40 {
-			t.Fatalf("OID 形状不对：%q", m.OID)
+			t.Fatalf("malformed OID: %q", m.OID)
 		}
 		if m.Author != "alice" {
-			t.Fatalf("作者应取自 git 配置，得到 %q", m.Author)
+			t.Fatalf("the author should come from git config, got %q", m.Author)
 		}
 	}
 }
 
-// 回归护栏：每条消息的 trailer 都必须能被 git 解析出来。
-// 曾经因为空正文让 commit message 以空行开头，导致 Seq 读成空串。
+// Regression guard: every message trailer must be parseable by git.
+// An empty body once made the commit message start with a blank line, which made Seq read back as an empty string.
 func TestEveryMessageHasParseableSeqTrailer(t *testing.T) {
 	s, dir := newStore(t)
-	mustSend(t, s, "普通")
-	mustSend(t, s, "多行\n第二行")
-	target := mustSend(t, s, "待撤回")
+	mustSend(t, s, "plain")
+	mustSend(t, s, "multi\nsecond line")
+	target := mustSend(t, s, "to be retracted")
 
-	// 各条消息的 seq 必须能被 git 原样读回：1,2,3,4
+	// Each message Seq must read back verbatim through git: 1,2,3,4
 	ref := FeedRef(s.Pub())
 	out := rawGit(t, dir, "log", "--format=%(trailers:key=ImmuLog-Seq,valueonly)", ref)
 	var seqs []string
@@ -103,72 +103,72 @@ func TestEveryMessageHasParseableSeqTrailer(t *testing.T) {
 		}
 	}
 	if len(seqs) != 3 {
-		t.Fatalf("3 条消息都应带可解析的 Seq，实际 %v（看 out=%q）", seqs, out)
+		t.Fatalf("all 3 messages should carry a parseable Seq, actually %v (out=%q)", seqs, out)
 	}
 
-	// 撤回事件同理
+	// The retraction event likewise
 	if _, err := s.Retract(context.Background(), target.OID, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.History(context.Background(), 10)
 	for i, m := range got {
 		if m.Seq == 0 {
-			t.Fatalf("第 %d 条消息的 Seq 未解析出来：%+v", i, m)
+			t.Fatalf("message %d has no parseable Seq: %+v", i, m)
 		}
 	}
 }
 
 func TestHistoryIsNewestFirstAndBodyIsClean(t *testing.T) {
 	s, _ := newStore(t)
-	mustSend(t, s, "第一条")
-	mustSend(t, s, "第二条")
+	mustSend(t, s, "first")
+	mustSend(t, s, "second")
 
 	got, err := s.History(context.Background(), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("应读回 2 条，得到 %d", len(got))
+		t.Fatalf("expected 2 back, got %d", len(got))
 	}
-	if got[0].Body != "第二条" || got[1].Body != "第一条" {
-		t.Fatalf("顺序应为新的在前：%q, %q", got[0].Body, got[1].Body)
+	if got[0].Body != "second" || got[1].Body != "first" {
+		t.Fatalf("newest should come first: %q, %q", got[0].Body, got[1].Body)
 	}
-	// trailer 块必须被剥掉，正文里不能残留元数据
+	// The trailer block must be stripped; no metadata may remain in the body
 	for _, m := range got {
 		if strings.Contains(m.Body, "ImmuLog-") {
-			t.Errorf("正文残留 trailer：%q", m.Body)
+			t.Errorf("trailer left in the body: %q", m.Body)
 		}
 		if m.Kind != KindMsg {
-			t.Errorf("Kind = %q，期望 msg", m.Kind)
+			t.Errorf("Kind = %q, expected msg", m.Kind)
 		}
 	}
 }
 
 func TestMultiLineBodyRoundTrips(t *testing.T) {
 	s, _ := newStore(t)
-	body := "第一行\n第二行\n\n第四行"
+	body := "first line\nsecond line\n\nfourth line"
 	mustSend(t, s, body)
 
 	got, _ := s.History(context.Background(), 1)
 	if len(got) != 1 || got[0].Body != body {
-		t.Fatalf("多行正文未能原样往返：%q", got[0].Body)
+		t.Fatalf("the multi-line body did not round trip: %q", got[0].Body)
 	}
 }
 
-// 正文里伪造同名 trailer 不得生效 —— git 的 trailer 解析取最后一次出现。
+// A forged trailer inside the body must not take effect -- git takes the last occurrence.
 func TestFakeTrailersInBodyAreInert(t *testing.T) {
 	s, _ := newStore(t)
-	m := mustSend(t, s, "正文\n\nImmuLog-Seq: 999\nImmuLog-Retracts: "+strings.Repeat("f", 40))
+	m := mustSend(t, s, "body\n\nImmuLog-Seq: 999\nImmuLog-Retracts: "+strings.Repeat("f", 40))
 
 	got, _ := s.History(context.Background(), 1)
 	if got[0].Seq != 1 {
-		t.Fatalf("注入的 Seq 生效了：%d", got[0].Seq)
+		t.Fatalf("the injected Seq took effect: %d", got[0].Seq)
 	}
 	if got[0].Kind != KindMsg {
-		t.Fatalf("注入的 Retracts 改变了 Kind：%q", got[0].Kind)
+		t.Fatalf("the injected Retracts changed the Kind: %q", got[0].Kind)
 	}
 	if !strings.Contains(got[0].Body, "ImmuLog-Seq: 999") {
-		t.Errorf("正文应原样保留（只是不生效）：%q", got[0].Body)
+		t.Errorf("the body should be kept verbatim (just inert): %q", got[0].Body)
 	}
 	_ = m
 }
@@ -177,65 +177,65 @@ func TestSendRejectsTooLong(t *testing.T) {
 	s, _ := newStore(t)
 	_, err := s.Send(context.Background(), strings.Repeat("x", MaxBody+1))
 	if !errors.Is(err, ErrTooLong) {
-		t.Fatalf("应返回 ErrTooLong，得到 %v", err)
+		t.Fatalf("expected ErrTooLong, got %v", err)
 	}
 }
 
-// 空正文必须被拒：否则 commit message 以空行开头，git 的 trailer 解析会失效。
+// An empty body must be rejected: otherwise the commit message starts with a blank line and git's trailer parsing breaks.
 func TestSendRejectsEmptyBody(t *testing.T) {
 	s, _ := newStore(t)
 	for _, body := range []string{"", "   ", "\n\n", "\t"} {
 		if _, err := s.Send(context.Background(), body); !errors.Is(err, ErrEmpty) {
-			t.Fatalf("Send(%q) 应返回 ErrEmpty，得到 %v", body, err)
+			t.Fatalf("Send(%q) should return ErrEmpty, got %v", body, err)
 		}
 	}
 	if n, _ := s.repo.Count(context.Background(), s.ref); n != 0 {
-		t.Fatalf("被拒的消息不得落盘，链长 = %d", n)
+		t.Fatalf("a rejected message must not be stored; chain length = %d", n)
 	}
 }
 
-// ── 撤回 ──────────────────────────────────────────────────────────
+// ── Retraction ──────────────────────────────────────────────────
 
-// 撤回是**追加事件**：链变长，原对象仍在。
+// Retraction is an **appended event**: the chain grows and the original object stays.
 func TestRetractIsAppendNotDelete(t *testing.T) {
 	s, _ := newStore(t)
-	target := mustSend(t, s, "说错了的话")
+	target := mustSend(t, s, "something I got wrong")
 
-	r, err := s.Retract(context.Background(), target.OID, "发错频道")
+	r, err := s.Retract(context.Background(), target.OID, "wrong channel")
 	if err != nil {
 		t.Fatalf("Retract: %v", err)
 	}
 	if r.Kind != KindRetract || r.Retracts != target.OID {
-		t.Fatalf("撤回事件形状不对：%+v", r)
+		t.Fatalf("malformed retraction event: %+v", r)
 	}
 
 	got, _ := s.History(context.Background(), 10)
 	if len(got) != 2 {
-		t.Fatalf("链应增长到 2 条，得到 %d", len(got))
+		t.Fatalf("the chain should grow to 2, got %d", len(got))
 	}
-	// 被撤回的原消息必须仍然读得到
+	// The retracted message must still be readable
 	var found bool
 	for _, m := range got {
-		if m.OID == target.OID && m.Body == "说错了的话" {
+		if m.OID == target.OID && m.Body == "something I got wrong" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("原消息被删掉了 —— 这违反设计铁律（撤回即追加，永不删除）")
+		t.Fatal("the original message was deleted -- this breaks the design rule (retract = append, never delete)")
 	}
 }
 
 func TestRetractRequiresTarget(t *testing.T) {
 	s, _ := newStore(t)
 	if _, err := s.Retract(context.Background(), "", "x"); !errors.Is(err, ErrNoTarget) {
-		t.Fatal("缺少目标时应返回 ErrNoTarget")
+		t.Fatal("a missing target should return ErrNoTarget")
 	}
 }
 
-// 撤回目标是请求体来的字符串，必须严格校验格式 —— 否则又是一个注入面。
+// A retraction target is a string from a request body and must be validated strictly -- otherwise it is another injection surface.
 func TestRetractRejectsMalformedTarget(t *testing.T) {
 	s, _ := newStore(t)
-	mustSend(t, s, "占位")
+	mustSend(t, s, "placeholder")
 	for _, bad := range []string{
 		"not-an-oid",
 		strings.Repeat("z", 40),
@@ -244,39 +244,39 @@ func TestRetractRejectsMalformedTarget(t *testing.T) {
 		"aaaa\nImmuLog-Seq: 999",
 	} {
 		if _, err := s.Retract(context.Background(), bad, "x"); !errors.Is(err, ErrBadTarget) {
-			t.Fatalf("Retract(%q) 应返回 ErrBadTarget，得到 %v", bad, err)
+			t.Fatalf("Retract(%q) should return ErrBadTarget, got %v", bad, err)
 		}
 	}
 }
 
-// 只能撤回自己 feed 里的消息 —— 撤回是作者的权利。
+// You may only retract messages in your own feed -- retraction is the author's right.
 func TestRetractOnlyOwnMessages(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
 	me := storeOf(t, repo, "alice")
 	other := storeOf(t, repo, "bob")
 
-	mine := mustSend(t, me, "我说的")
-	theirs := mustSend(t, other, "他说的")
+	mine := mustSend(t, me, "what I said")
+	theirs := mustSend(t, other, "what he said")
 
-	if _, err := me.Retract(ctx, theirs.OID, "越权"); !errors.Is(err, ErrNotMine) {
-		t.Fatalf("不得撤回别人 feed 里的消息，得到 %v", err)
+	if _, err := me.Retract(ctx, theirs.OID, "out of bounds"); !errors.Is(err, ErrNotMine) {
+		t.Fatalf("must not retract a message in someone else's feed, got %v", err)
 	}
-	// 完全不存在的对象同样拒绝
-	if _, err := me.Retract(ctx, strings.Repeat("a", 40), "凭空"); !errors.Is(err, ErrNotMine) {
-		t.Fatalf("不存在的目标应被拒，得到 %v", err)
+	// A completely non-existent object is refused too
+	if _, err := me.Retract(ctx, strings.Repeat("a", 40), "out of thin air"); !errors.Is(err, ErrNotMine) {
+		t.Fatalf("a non-existent target should be refused, got %v", err)
 	}
-	// 自己的可以
-	if _, err := me.Retract(ctx, mine.OID, "我的"); err != nil {
-		t.Fatalf("撤回自己的消息应成功：%v", err)
+	// Your own is fine
+	if _, err := me.Retract(ctx, mine.OID, "mine"); err != nil {
+		t.Fatalf("retracting your own message should succeed: %v", err)
 	}
 }
 
-// 撤回理由来自请求体，一个换行就能伪造 trailer —— 而 git 取最后一次出现，伪造的会赢。
+// A retraction reason comes from a request body; one newline forges a trailer -- and git takes the last occurrence, so the forgery wins.
 func TestRetractReasonCannotInjectTrailers(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
-	target := mustSend(t, s, "原消息")
+	target := mustSend(t, s, "original message")
 
 	nasty := "ok\nImmuLog-Seq: 999\nImmuLog-Retracts: " + strings.Repeat("f", 40) + "\n"
 	if _, err := s.Retract(ctx, target.OID, nasty); err != nil {
@@ -285,24 +285,24 @@ func TestRetractReasonCannotInjectTrailers(t *testing.T) {
 
 	got, _ := s.History(ctx, 10)
 	if len(got) != 2 {
-		t.Fatalf("应有 2 条，得到 %d", len(got))
+		t.Fatalf("expected 2, got %d", len(got))
 	}
 	ev := got[0]
 	if ev.Kind != KindRetract {
-		t.Fatalf("链尾应是撤回事件：%+v", ev)
+		t.Fatalf("the tip should be a retraction event: %+v", ev)
 	}
 	if ev.Seq != 2 {
-		t.Fatalf("注入生效了：Seq = %d，期望 2", ev.Seq)
+		t.Fatalf("the injection took effect: Seq = %d, expected 2", ev.Seq)
 	}
 	if ev.Retracts != target.OID {
-		t.Fatalf("注入的 Retracts 覆盖了真值：%q", ev.Retracts)
+		t.Fatalf("the injected Retracts overwrote the real value: %q", ev.Retracts)
 	}
 	if len(ev.Retracts) != 40 {
-		t.Fatalf("Retracts 形状不对：%q", ev.Retracts)
+		t.Fatalf("malformed Retracts: %q", ev.Retracts)
 	}
 }
 
-// ── 完整性：见证锚与引用重写 ──────────────────────────────────────
+// ── Integrity: witness anchors and reference rewrites ───────────
 
 func TestVerifyOKAfterNormalAppend(t *testing.T) {
 	s, _ := newStore(t)
@@ -314,10 +314,10 @@ func TestVerifyOKAfterNormalAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !v.OK {
-		t.Fatalf("正常追加后应判定一致：%+v", v)
+		t.Fatalf("a normal append should verify: %+v", v)
 	}
 	if v.Witness != v.Current {
-		t.Fatalf("见证锚应已推进到链尾：%s vs %s", v.Witness, v.Current)
+		t.Fatalf("the witness anchor should have advanced to the tip: %s vs %s", v.Witness, v.Current)
 	}
 }
 
@@ -326,13 +326,13 @@ func TestVerifyDetectsRewrite(t *testing.T) {
 	mustSend(t, s, "a")
 	b := mustSend(t, s, "b")
 
-	// 外部攻击者：从 a 的位置另起一条平行链，然后把 ref 强行指过去
+	// External attacker: start a parallel chain from a, then force the ref across
 	parent := rawGit(t, dir, "rev-parse", b.OID+"^")
 	tree := rawGit(t, dir, "hash-object", "-w", "-t", "tree", "--stdin")
-	forged := rawGitIn(t, dir, "被改写的历史\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n",
+	forged := rawGitIn(t, dir, "rewritten history\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n",
 		"commit-tree", tree, "-p", parent)
 	if forged == b.OID {
-		t.Fatal("前置条件：伪造的提交应是一个不同的对象")
+		t.Fatal("precondition: the forgery should be a different object")
 	}
 	rawGit(t, dir, "update-ref", FeedRef(s.Pub()), forged)
 
@@ -341,13 +341,13 @@ func TestVerifyDetectsRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if v.OK {
-		t.Fatal("引用被改写后必须判定为不一致 —— 这是本项目存在的全部理由")
+		t.Fatal("a rewritten reference must verify as inconsistent -- it is the entire reason this project exists")
 	}
 	if v.Reason != ReasonRewrite {
-		t.Fatalf("原因应为 %q，得到 %q", ReasonRewrite, v.Reason)
+		t.Fatalf("reason should be %q, got %q", ReasonRewrite, v.Reason)
 	}
 	if v.Witness != b.OID {
-		t.Errorf("见证锚不应被攻击者带动：%s", v.Witness)
+		t.Errorf("the witness anchor must not be dragged along by the attacker: %s", v.Witness)
 	}
 }
 
@@ -356,7 +356,7 @@ func TestVerifyDetectsRollback(t *testing.T) {
 	a := mustSend(t, s, "a")
 	b := mustSend(t, s, "b")
 
-	// 外部攻击者：把链尾指回一个更早的点
+	// External attacker: point the tip back at an earlier commit
 	rawGit(t, dir, "update-ref", FeedRef(s.Pub()), a.OID)
 
 	v, err := s.Verify(context.Background())
@@ -364,42 +364,42 @@ func TestVerifyDetectsRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if v.OK {
-		t.Fatal("回滚必须被判定为不一致")
+		t.Fatal("a rollback must verify as inconsistent")
 	}
 	if v.Reason != ReasonRollback {
-		t.Fatalf("原因应为 %q，得到 %q", ReasonRollback, v.Reason)
+		t.Fatalf("reason should be %q, got %q", ReasonRollback, v.Reason)
 	}
 	if v.Witness != b.OID {
-		t.Errorf("见证锚应仍停留在 b：%s", v.Witness)
+		t.Errorf("the witness anchor should still sit at b: %s", v.Witness)
 	}
 }
 
-// 攻击者看不到也改不了见证锚：它不在 refs/feeds 命名空间里。
+// An attacker cannot see or alter the witness anchor: it is outside the refs/feeds namespace.
 func TestWitnessLivesOutsideFeedNamespace(t *testing.T) {
 	s, dir := newStore(t)
 	mustSend(t, s, "a")
 
 	w, err := s.Witness(context.Background())
 	if err != nil || w == "" {
-		t.Fatalf("见证锚应已建立：%q %v", w, err)
+		t.Fatalf("the witness anchor should exist: %q %v", w, err)
 	}
 
 	wrefs := strings.Fields(rawGit(t, dir, "for-each-ref", "--format=%(refname)", "refs/witness/"))
 	if len(wrefs) != 1 || wrefs[0] != "refs/witness/"+s.Pub() {
-		t.Fatalf("见证锚应位于 refs/witness/%s，实际 %v", s.Pub(), wrefs)
+		t.Fatalf("the witness anchor should live at refs/witness/%s, actually %v", s.Pub(), wrefs)
 	}
 
-	// 关键性质：只同步 refs/feeds 的一方永远拿不到见证锚
+	// The key property: whoever syncs only refs/feeds never obtains the witness anchor
 	feeds := rawGit(t, dir, "for-each-ref", "--format=%(refname)", "refs/feeds/")
 	if strings.Contains(feeds, "witness") {
-		t.Fatalf("见证锚不得出现在 refs/feeds 下：%q", feeds)
+		t.Fatalf("the witness anchor must not appear under refs/feeds: %q", feeds)
 	}
 	if strings.TrimSpace(feeds) != FeedRef(s.Pub()) {
-		t.Fatalf("refs/feeds 下应恰好只有本机 feed，实际 %q", feeds)
+		t.Fatalf("refs/feeds should hold exactly this machine's feed, actually %q", feeds)
 	}
 }
 
-// ── 串行化 ────────────────────────────────────────────────────────
+// ── Serialisation ───────────────────────────────────────────────
 
 func TestConcurrentSendsAreSerialized(t *testing.T) {
 	s, _ := newStore(t)
@@ -412,7 +412,7 @@ func TestConcurrentSendsAreSerialized(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			m, err := s.Send(context.Background(), "并发 "+string(rune('a'+i%26)))
+			m, err := s.Send(context.Background(), "concurrent "+string(rune('a'+i%26)))
 			errs[i], seqs[i] = err, m.Seq
 		}(i)
 	}
@@ -420,23 +420,23 @@ func TestConcurrentSendsAreSerialized(t *testing.T) {
 
 	for i, err := range errs {
 		if err != nil {
-			t.Fatalf("第 %d 个并发写入失败：%v", i, err)
+			t.Fatalf("concurrent write %d failed: %v", i, err)
 		}
 	}
 	sort.Ints(seqs)
 	for i, got := range seqs {
 		if got != i+1 {
-			t.Fatalf("序号应恰好是 1..%d 且不重复，得到 %v", n, seqs)
+			t.Fatalf("sequence numbers should be exactly 1..%d with no repeats, got %v", n, seqs)
 		}
 	}
 	if v, _ := s.Verify(context.Background()); !v.OK {
-		t.Fatal("并发写入后链应仍然自洽")
+		t.Fatal("the chain should still be consistent after concurrent writes")
 	}
 }
 
-// ── 派生 ──────────────────────────────────────────────────────────
+// ── Derivation ───────────────────────────────────────────────────
 
-// FeedID 的输出必须是 ref 安全的 —— 身份里的任何字符都不能变成路径穿越。
+// FeedID output must be ref-safe: no character of an identity may become a path traversal.
 func TestFeedIDIsRefSafe(t *testing.T) {
 	for _, seed := range []string{
 		"alice\x00a@b\x00",
@@ -448,24 +448,24 @@ func TestFeedIDIsRefSafe(t *testing.T) {
 	} {
 		id := FeedID(seed)
 		if len(id) != 16 {
-			t.Fatalf("FeedID(%q) 长度应为 16，得到 %d", seed, len(id))
+			t.Fatalf("FeedID(%q) should be 16 chars, got %d", seed, len(id))
 		}
 		for _, c := range id {
 			if !strings.ContainsRune("0123456789abcdef", c) {
-				t.Fatalf("FeedID(%q) = %q 含非十六进制字符", seed, id)
+				t.Fatalf("FeedID(%q) = %q contains non-hex characters", seed, id)
 			}
 		}
 	}
-	// 不同身份必须得到不同 feed
+	// Different identities must yield different feeds
 	if FeedID("a") == FeedID("b") {
-		t.Fatal("不同身份不应得到同一个 feed")
+		t.Fatal("different identities must not share a feed")
 	}
 }
 
-// 默认不做 commit 签名；配了 user.signingkey 才开。
+// Commits are not signed by default; configuring user.signingkey turns it on.
 func TestSigningOffByDefault(t *testing.T) {
 	s, _ := newStore(t)
 	if s.Signed() {
-		t.Fatal("未配置 user.signingkey 时不应签名")
+		t.Fatal("with no user.signingkey it must not sign")
 	}
 }

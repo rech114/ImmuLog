@@ -35,16 +35,17 @@ func TestWrapUnwrapRoundTrip(t *testing.T) {
 		t.Fatalf("UnwrapKey: %v", err)
 	}
 	if string(got) != string(key) {
-		t.Fatal("解出来的密钥与原文不符")
+		t.Fatal("the unwrapped key differs from the original")
 	}
-	// 不是给 alice 的，alice 解不开
+	// It is not for alice, so alice cannot open it
 	if _, err := UnwrapKey(alice.priv, wrapped); err == nil {
-		t.Fatal("非收件人竟然解开了")
+		t.Fatal("a non-recipient managed to open it")
 	}
 }
 
-// 每次封装都用新的临时密钥对 —— 同一个密钥的两份封装必须互不可比，
-// 否则外部一眼就能看出"这两个人是同一个房间的"。
+// Every wrap uses a fresh ephemeral pair, so two wraps of the same key must not
+// be comparable -- otherwise an outsider can tell at a glance that the two are
+// in the same room.
 func TestWrapIsUniquePerCall(t *testing.T) {
 	bob := mustIdentity(t)
 	pub := mustPub(t, bob.Public())
@@ -53,11 +54,11 @@ func TestWrapIsUniquePerCall(t *testing.T) {
 	a, _ := WrapKey(pub, key)
 	b, _ := WrapKey(pub, key)
 	if a == b {
-		t.Fatal("两次封装结果相同 —— 临时密钥没有随机化")
+		t.Fatal("two wraps produced the same bytes -- the ephemeral key is not randomised")
 	}
 	for _, w := range []string{a, b} {
 		if got, err := UnwrapKey(bob.priv, w); err != nil || string(got) != string(key) {
-			t.Fatalf("两份封装都该能解开：%v", err)
+			t.Fatalf("both wraps should open: %v", err)
 		}
 	}
 }
@@ -65,7 +66,7 @@ func TestWrapIsUniquePerCall(t *testing.T) {
 func TestWrapRejectsWrongKeySize(t *testing.T) {
 	bob := mustIdentity(t)
 	if _, err := WrapKey(mustPub(t, bob.Public()), []byte("too short")); err == nil {
-		t.Fatal("密钥长度不对应报错")
+		t.Fatal("a wrong key length should error")
 	}
 }
 
@@ -73,7 +74,7 @@ func TestUnwrapRejectsGarbage(t *testing.T) {
 	bob := mustIdentity(t)
 	for _, bad := range []string{"", "!!!not-base64!!!", "AAAA", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
 		if _, err := UnwrapKey(bob.priv, bad); err == nil {
-			t.Fatalf("垃圾输入 %q 不该被接受", bad)
+			t.Fatalf("garbage input %q must not be accepted", bad)
 		}
 	}
 }
@@ -82,30 +83,31 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	key := make([]byte, KeySize)
 	key[0] = 7
 
-	for _, plain := range []string{"", "一句话", "多行\n正文\n\n带空行", strings.Repeat("x", 10000)} {
+	for _, plain := range []string{"", "one line", "multi\nline\n\nwith a blank", strings.Repeat("x", 10000)} {
 		ct, err := SealBody(key, plain)
 		if err != nil {
 			t.Fatalf("SealBody: %v", err)
 		}
 		if plain != "" && strings.Contains(ct, plain) {
-			t.Fatal("密文里能直接看到明文")
+			t.Fatal("the plaintext is visible in the ciphertext")
 		}
 		got, err := OpenBody(key, ct)
 		if err != nil {
 			t.Fatalf("OpenBody: %v", err)
 		}
 		if got != plain {
-			t.Fatalf("往返不符：%q vs %q", got, plain)
+			t.Fatalf("round trip differs: %q vs %q", got, plain)
 		}
 	}
 }
 
-// AEAD 的意义就在这里：改一个字节就解不开，而不是解出一段垃圾。
+// This is the point of AEAD: flip one byte and it will not open, rather than
+// yielding garbage.
 func TestOpenRejectsTamperedCiphertext(t *testing.T) {
 	key := make([]byte, KeySize)
-	ct, _ := SealBody(key, "原文")
+	ct, _ := SealBody(key, "original text")
 
-	// 在**解码后的字节**上翻位，而不是 base64 字符串
+	// Flip a bit in the **decoded bytes**, not in the base64 string
 	raw, err := base64.StdEncoding.DecodeString(ct)
 	if err != nil {
 		t.Fatal(err)
@@ -114,20 +116,20 @@ func TestOpenRejectsTamperedCiphertext(t *testing.T) {
 	tampered := base64.StdEncoding.EncodeToString(raw)
 
 	if _, err := OpenBody(key, tampered); !errors.Is(err, ErrBadCiphertext) {
-		t.Fatalf("被改动的密文应返回 ErrBadCiphertext，得到 %v", err)
+		t.Fatalf("a tampered ciphertext should return ErrBadCiphertext, got %v", err)
 	}
 }
 
-// 密文被截断同样要拒绝，不能解出半截。
+// A truncated ciphertext must be refused too; half a message must not open.
 func TestOpenRejectsTruncatedCiphertext(t *testing.T) {
 	key := make([]byte, KeySize)
-	ct, _ := SealBody(key, "一段足够长的原文用来确保有内容可截断")
+	ct, _ := SealBody(key, "a long enough message so there is something to truncate")
 	raw, _ := base64.StdEncoding.DecodeString(ct)
 
 	for _, cut := range []int{1, len(raw) / 2, len(raw) - 1} {
 		short := base64.StdEncoding.EncodeToString(raw[:cut])
 		if _, err := OpenBody(key, short); err == nil {
-			t.Fatalf("截断到 %d 字节不该解得开", cut)
+			t.Fatalf("truncating to %d bytes must not open", cut)
 		}
 	}
 }
@@ -135,21 +137,22 @@ func TestOpenRejectsTruncatedCiphertext(t *testing.T) {
 func TestOpenWithWrongKeyFails(t *testing.T) {
 	k1, k2 := make([]byte, KeySize), make([]byte, KeySize)
 	k2[0] = 1
-	ct, _ := SealBody(k1, "原文")
+	ct, _ := SealBody(k1, "original text")
 	if _, err := OpenBody(k2, ct); err == nil {
-		t.Fatal("换一把密钥不该解得开")
+		t.Fatal("a different key must not open it")
 	}
 }
 
-// 正文密钥与封装密钥必须由不同的 info 派生，不能互相串用。
+// The body key and the wrapping key must derive from different info, and must
+// not be usable interchangeably.
 func TestBodyAndWrapKeysAreSeparated(t *testing.T) {
 	key := make([]byte, KeySize)
-	ct, _ := SealBody(key, "原文")
+	ct, _ := SealBody(key, "original text")
 
-	// 把密文当成"封装"去解，必须失败
+	// Treating a body ciphertext as a wrapped key must fail
 	bob := mustIdentity(t)
 	if _, err := UnwrapKey(bob.priv, ct); err == nil {
-		t.Fatal("正文密文不该能当封装解开")
+		t.Fatal("a body ciphertext must not unwrap as a wrapped key")
 	}
 }
 
@@ -160,10 +163,10 @@ func TestIdentitySeedRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if again.Public() != id.Public() {
-		t.Fatal("从种子还原出的公钥不一致")
+		t.Fatal("the public key restored from the seed differs")
 	}
 	if len(id.Seed()) != KeySize {
-		t.Fatalf("种子应为 %d 字节", KeySize)
+		t.Fatalf("the seed should be %d bytes", KeySize)
 	}
 }
 

@@ -10,12 +10,12 @@ import (
 	"immulog/core/gitx"
 )
 
-// ── 快照 ──────────────────────────────────────────────────────────
+// ── Snapshots ───────────────────────────────────────────────────
 
 func TestCaptureIsDeterministic(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一条")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
 
 	a, err := Capture(ctx, repo)
 	if err != nil {
@@ -23,13 +23,13 @@ func TestCaptureIsDeterministic(t *testing.T) {
 	}
 	b, _ := Capture(ctx, repo)
 	if a.Digest != b.Digest {
-		t.Fatalf("同一状态下摘要必须稳定：%q vs %q", a.Digest, b.Digest)
+		t.Fatalf("the digest must be stable for the same state: %q vs %q", a.Digest, b.Digest)
 	}
 	if len(a.Digest) != 40 {
-		t.Fatalf("摘要应是 git 对象名，得到 %q", a.Digest)
+		t.Fatalf("the digest should be a git object name, got %q", a.Digest)
 	}
 	if len(a.Refs) != 1 || a.Refs[0].OID == "" {
-		t.Fatalf("快照应包含全部 feed 锚点：%+v", a.Refs)
+		t.Fatalf("the snapshot should list every feed anchor: %+v", a.Refs)
 	}
 }
 
@@ -38,17 +38,17 @@ func TestCaptureChangesWhenFeedAdvances(t *testing.T) {
 	ctx := context.Background()
 	s := storeOf(t, repo, "alice")
 
-	mustSend(t, s, "一")
+	mustSend(t, s, "one")
 	before, _ := Capture(ctx, repo)
-	mustSend(t, s, "二")
+	mustSend(t, s, "two")
 	after, _ := Capture(ctx, repo)
 
 	if before.Digest == after.Digest {
-		t.Fatal("链尾前进后摘要必须变化 —— 否则快照毫无意义")
+		t.Fatal("the digest must change once the tip advances -- otherwise snapshots mean nothing")
 	}
 }
 
-// 空仓库也要有稳定的摘要（空文本的 blob 对象名），而不是空串。
+// An empty repository still needs a stable digest (the empty blob's object name), not an empty string.
 func TestCaptureOnEmptyRepoIsStable(t *testing.T) {
 	repo, _ := node(t, "empty")
 	a, err := Capture(context.Background(), repo)
@@ -56,46 +56,46 @@ func TestCaptureOnEmptyRepoIsStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a.Digest == "" || len(a.Refs) != 0 {
-		t.Fatalf("空仓库摘要形状不对：%+v", a)
+		t.Fatalf("the empty-repository digest has the wrong shape: %+v", a)
 	}
 }
 
-// 规范文本必须按 ref 名排序 —— 否则 ref 顺序一变摘要就变，跨节点比对毫无意义。
+// The canonical text must sort by ref name -- otherwise a change in ref order changes the digest and cross-node comparison means nothing.
 func TestSnapshotTextIsCanonicallyOrdered(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
-	mustSend(t, storeOf(t, repo, "alice"), "一")
-	mustSend(t, storeOf(t, repo, "bob"), "二")
-	mustSend(t, storeOf(t, repo, "carol"), "三")
+	mustSend(t, storeOf(t, repo, "alice"), "one")
+	mustSend(t, storeOf(t, repo, "bob"), "two")
+	mustSend(t, storeOf(t, repo, "carol"), "three")
 
 	snap, _ := Capture(ctx, repo)
 	if len(snap.Refs) != 3 {
-		t.Fatalf("应有 3 条 feed，得到 %d", len(snap.Refs))
+		t.Fatalf("expected 3 feeds, got %d", len(snap.Refs))
 	}
 	for i := 1; i < len(snap.Refs); i++ {
 		if snap.Refs[i-1].Name >= snap.Refs[i].Name {
-			t.Fatalf("ref 必须按名升序：%v", snap.Refs)
+			t.Fatalf("refs must be ascending by name: %v", snap.Refs)
 		}
 	}
-	// 文本与 Refs 必须一致 —— 摘要算的就是这段文本
+	// The text and Refs must agree -- the digest is computed over that text
 	for _, r := range snap.Refs {
 		if !strings.Contains(snap.Text, r.Name+" "+r.OID) {
-			t.Fatalf("规范文本里缺 %s：%q", r.Name, snap.Text)
+			t.Fatalf("the canonical text is missing %s: %q", r.Name, snap.Text)
 		}
 	}
 }
 
-// ── 一致性比对 ────────────────────────────────────────────────────
+// ── Consistency comparison ──────────────────────────────────────
 
-// 一方落后不是矛盾 —— 只有互不构成祖先关系才算分裂。
+// One side being behind is not a contradiction -- only tips that are not ancestors of one another count as divergence.
 func TestDivergedIgnoresStaleness(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
 	s := storeOf(t, repo, "alice")
 
-	mustSend(t, s, "一")
+	mustSend(t, s, "one")
 	old, _ := Capture(ctx, repo)
-	mustSend(t, s, "二")
+	mustSend(t, s, "two")
 	fresh, _ := Capture(ctx, repo)
 
 	d, err := Diverged(ctx, repo, old, fresh)
@@ -103,7 +103,7 @@ func TestDivergedIgnoresStaleness(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(d) != 0 {
-		t.Fatalf("落后的快照不算矛盾，得到 %v", d)
+		t.Fatalf("a stale snapshot is not a contradiction, got %v", d)
 	}
 }
 
@@ -113,11 +113,11 @@ func TestDivergedSpotsParallelChains(t *testing.T) {
 	s := storeOf(t, repo, "alice")
 	ref := FeedRef(s.Pub())
 
-	first := mustSend(t, s, "起点")
-	mustSend(t, s, "诚实")
+	first := mustSend(t, s, "starting point")
+	mustSend(t, s, "the honest one")
 	mine, _ := Capture(ctx, repo)
 
-	// 攻击者另起一条平行链；把对象拉到本地（比对需要对象在本地）
+	// The attacker starts a parallel chain; pull the objects locally (comparison needs them present)
 	liarDir := liar(t, dir, ref, first.OID)
 	rawGit(t, dir, "fetch", "--quiet", liarDir, "+refs/feeds/*:refs/quarantine/x/*")
 	forged := rawGit(t, dir, "rev-parse", "refs/quarantine/x/"+s.Pub())
@@ -128,22 +128,22 @@ func TestDivergedSpotsParallelChains(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(d) != 1 || d[0] != ref {
-		t.Fatalf("平行链必须被判为分裂，得到 %v", d)
+		t.Fatalf("a parallel chain must be judged as divergence, got %v", d)
 	}
 }
 
-// 缺少对象时不能瞎判 —— 应当报错而不是默默说"一致"。
+// With objects missing it must not guess -- it should error rather than quietly say "consistent".
 func TestDivergedErrorsWhenObjectMissing(t *testing.T) {
 	repo, _ := node(t, "alice")
 	ctx := context.Background()
 	s := storeOf(t, repo, "alice")
-	mustSend(t, s, "一")
+	mustSend(t, s, "one")
 	mine, _ := Capture(ctx, repo)
 
 	theirs := Snapshot{Refs: []gitx.RefInfo{
-		{Name: FeedRef(s.Pub()), OID: strings.Repeat("a", 40)}, // 本地不存在的对象
+		{Name: FeedRef(s.Pub()), OID: strings.Repeat("a", 40)}, // an object that does not exist locally
 	}}
 	if _, err := Diverged(ctx, repo, mine, theirs); err == nil {
-		t.Fatal("对象缺失时应报错，不能假装比对成功")
+		t.Fatal("a missing object should error, not pretend the comparison succeeded")
 	}
 }
