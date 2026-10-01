@@ -2,7 +2,7 @@
   "name": "immulog-tools",
   "private": true,
   "type": "module",
-  "description": "开发/CI 工具。不属于运行时；web/ 不引用这里，embed 出去的仍是零依赖前端。",
+  "description": "Dev/CI tooling. Not part of the runtime; web/ does not reference it, so what gets embedded stays a zero-dependency frontend.",
   "scripts": {
     "smoke": "node smoke.mjs",
     "visual": "node run.mjs",

@@ -1,114 +1,126 @@
-# ImmuLog 设计文档
+# ImmuLog Design Document
 
-> 一个把 Git 当作信任根（而非仅仅是数据库）的聊天系统。
-> 目标不是「防止撤回」，而是 **撤回可证明**。
-
----
-
-## 0. 一句话命题
-
-**Git 的哈希给不了「防撤回」，它给的是「撤回会留下证据」。**
-
-所以本项目的需求不是「让管理员删不掉」，而是：
-
-> **任何一次删除、回滚、改写，都无法静默发生。**
-> 攻击者可以拒绝服务、可以拖慢你，但**做不到不留痕迹**。
-
-强度公式只有一条：
-
-```
-防撤回强度 = 副本分布广度 × 锚定外部性
-```
-
-哈希本身是免费附赠品；值钱的是「别人手里也有那份哈希」。
+> A chat system that treats Git as its root of trust, not merely as a database.
+> The goal is not "prevent retraction" but **provable retraction**.
 
 ---
 
-## 1. 目标与非目标
+## 0. The thesis in one sentence
 
-### 目标
+**Git's hashing cannot give you "no retraction". It gives you "retraction leaves evidence".**
 
-| # | 目标 |
+So the requirement is not "make it impossible for an admin to delete", but:
+
+> **No deletion, rollback or rewrite may happen quietly.**
+> An attacker can deny service and can slow you down, but **cannot leave no trace**.
+
+There is exactly one strength formula:
+
+```
+resistance to retraction = breadth of replicas x externality of anchoring
+```
+
+Hashing itself is a freebie; what is precious is that **somebody else holds that hash too**.
+
+---
+
+## 1. Goals and non-goals
+
+### Goals
+
+| # | Goal |
 |---|---|
-| G1 | 消息不可变；撤回是一条**追加事件**，不是删除操作 |
-| G2 | 身份由**签名**决定，`author` 字段只是标签 |
-| G3 | 引用重写（force push / 回滚 / split view）**可被客户端检测并留下证据** |
-| G4 | 单二进制、零第三方依赖、自建节点即可运行 |
-| G5 | 与 Git 生态完全兼容（`git log` 就是聊天记录） |
+| G1 | Messages are immutable; a retraction is an **appended event**, not a delete |
+| G2 | Identity comes from a **signature**; the `author` field is only a label |
+| G3 | Reference rewrites (force push / rollback / split view) are **detectable by clients, and leave evidence** |
+| G4 | One binary, zero third-party dependencies, self-hosted |
+| G5 | Fully compatible with the Git ecosystem (`git log` *is* the chat log) |
 
-### 非目标
+### Non-goals
 
-- ❌ 不追求实时音视频、大文件传输
-- ❌ 不追求「绝对无法删除」（做不到，见 §6.4）
-- ❌ 不自研密码学、不自研对象存储、不自研 HTTP 栈
-- ❌ 不隐藏「撤回发生了」这件事——**透明化是产品要求，不是妥协**
+- ❌ No real-time audio/video, no large file transfer
+- ❌ Not "absolutely impossible to delete" (that is unachievable, see §6.4)
+- ❌ No hand-rolled cryptography, object store or HTTP stack
+- ❌ We do not hide the fact that a retraction happened — **transparency is a product requirement, not a compromise**
 
-### 技术选型结论
+### Language decision
 
-**Go + 原版 Git CLI。零第三方依赖。**
+**Go + the real Git CLI. Zero third-party dependencies.**
 
-理由：「用原版 Git」这个决定把语言选择的重要性抽干了——剩下的只是路由、调子进程、推流三件胶水活。而 Go 的标准库里有一个生产级 HTTP 服务器，Rust 里没有。这是唯一无法抹平的差距。
+Reason: "use the real Git" drains most of the importance out of the language
+choice — what remains is routing, spawning subprocesses and streaming. Go's
+standard library ships a production-grade HTTP server; Rust's does not. That is
+the only gap that cannot be closed.
 
 | | Go | Rust |
 |---|---|---|
-| HTTP 服务器 | `net/http`（标准库） | axum + hyper + tower + **tokio** |
-| 子进程 | `os/exec` | `std::process::Command`（**持平**） |
-| 第三方依赖 | **0** | 5 直接 / 80+ 传递 |
+| HTTP server | `net/http` (standard library) | axum + hyper + tower + **tokio** |
+| Subprocess | `os/exec` | `std::process::Command` (**a tie**) |
+| Third-party deps | **0** | 5 direct / 80+ transitive |
 
-**进程模型持平的这一条很关键**：选了原版 Git，Rust 的性能优势被架空；剩下的全是依赖数量的 0 比 80。对一个防篡改项目，**零依赖是安全属性**——供应链攻击面归零。
-
----
-
-## 2. 威胁模型
-
-签名 commit 决定了攻击者的**能力上限**：他不能伪造内容（没有作者私钥），也改不了任何已有 commit 的字节（改了哈希就变）。
-
-他只剩四张牌：
-
-| 攻击 | 手段 | 本质 |
-|---|---|---|
-| **吞** | 丢弃 object / 不回 ref | 让消息消失 |
-| **退** | 把 ref 指回旧 commit | 回滚 rollback |
-| **换** | force push 到另一条历史 | 引用重写 |
-| **骗** | 对不同客户端说不同的话 | 分裂视图 split view |
-
-「换」和「退」本质相同：**ref 从 A 变成 B，而 B 不是 A 的后代**。统称**引用重写**。
-
-> **设计原则：引用重写不需要「防」，只需要「被发现」。**
-
-### 攻击者做不到什么
-
-- 伪造内容（无私钥）
-- 修改历史 commit 的字节（哈希会变）
-- 让篡改**不留痕迹**（这是本项目的全部价值）
+**The tie on process model is the important line**: having chosen the real Git,
+Rust's performance edge is neutralised, and what is left is 0 dependencies
+against 80. For a tamper-evidence project, **zero dependencies is a security
+property** — the supply-chain attack surface is nil.
 
 ---
 
-## 3. 数据模型
+## 2. Threat model
 
-### 3.1 核心铁律
+A signed commit fixes the attacker's **ceiling**: they cannot forge content (no
+author's private key) and cannot alter a byte of an existing commit (the hash
+would change).
 
-> **消息必须绑定在 object 上，绝不能绑定在 ref 上。**
+Four moves remain:
 
-因为：**ref 是可变的，object 是不可变的。** 所有「撤回」在 Git 里都等价于移动或删除 ref。
-
-### 3.2 概念映射
-
-| 聊天概念 | Git 原语 | 备注 |
+| Attack | Method | Essence |
 |---|---|---|
-| 消息 | commit object | 内容寻址 |
-| 消息正文 | commit message（或 blob） | 见 §3.4 |
-| **用户** | **`refs/feeds/<pubkey>`** | 每人一条 append-only feed |
-| 撤回 | 一条带 trailer 的新 commit | 绝不删原对象 |
-| 送达回执 | 反向引用对方 OID 的 trailer | 不可否认性来源 |
-| 已读 | ref 或 tag | 可变，不作证据 |
-| 签名 | commit 的 `gpgsig` 头 | `author` 字段是装饰品 |
+| **Swallow** | Drop objects / never serve a ref | Make a message vanish |
+| **Rewind** | Point a ref at an older commit | Rollback |
+| **Swap** | Force push to a different history | Reference rewrite |
+| **Lie** | Tell different clients different stories | Split view |
 
-### 3.3 为什么是 per-user feed，而不是共用一条分支
+"Swap" and "Rewind" are the same thing underneath: **a ref goes from A to B
+where B is not a descendant of A**. Collectively: a **reference rewrite**.
 
-原型的做法是所有人往 `refs/heads/main` 写。后果是**第二条消息必然是非快进，必然被拒**（实测 `! [rejected] (non-fast-forward)`）。
+> **Design principle: a reference rewrite needs no prevention, only detection.**
 
-ImmuLog **每人一条 feed**：
+### What the attacker cannot do
+
+- Forge content (no private key)
+- Alter the bytes of a historical commit (the hash would change)
+- Tamper **without leaving a trace** (this is the entire value of the project)
+
+---
+
+## 3. Data model
+
+### 3.1 The core rule
+
+> **A message must be bound to an object, never to a ref.**
+
+Because: **refs are mutable, objects are immutable.** Every "retraction" in Git
+is equivalent to moving or deleting a ref.
+
+### 3.2 Concept mapping
+
+| Chat concept | Git primitive | Note |
+|---|---|---|
+| Message | commit object | content addressed |
+| Message body | commit message (or a blob) | see §3.4 |
+| **User** | **`refs/feeds/<pubkey>`** | one append-only feed each |
+| Retraction | a new commit carrying a trailer | the original object is never deleted |
+| Delivery receipt | a trailer referencing the other side's OID | the source of non-repudiation |
+| Read marker | a ref or tag | mutable, never evidence |
+| Signature | the commit's `gpgsig` header | the `author` field is decoration |
+
+### 3.3 Why per-user feeds rather than one shared branch
+
+The prototype had everyone write to `refs/heads/main`. The consequence: **the
+second message is necessarily a non-fast-forward and is necessarily rejected**
+(measured: `! [rejected] (non-fast-forward)`).
+
+ImmuLog gives **every user their own feed**:
 
 ```
 refs/feeds/<pubkey-alice>
@@ -116,337 +128,386 @@ refs/feeds/<pubkey-bob>
 refs/feeds/<pubkey-carol>
 ```
 
-- 天然零冲突：没有人写别人的 ref
-- 天然 append-only：只允许快进
-- 想伪造 alice 的 feed → 必须 force push → 而别人手里有旧副本 → **当场分叉暴露**
+- Inherently conflict-free: nobody writes anyone else's ref
+- Inherently append-only: only fast-forwards are allowed
+- Forging alice's feed requires a force push — and others hold the old copy, so
+  it **splits in the open immediately**
 
-### 3.4 一条消息的物理形态
+### 3.4 The physical shape of a message
 
 ```
 commit object
-├── tree:        复用父的 tree（消息不产生任何文件）
-├── parent:      同一作者的上一条 commit        ← 因果链
-├── gpgsig:      作者密钥签名                     ← 身份
+├── tree:        reuses the parent's tree (a message produces no files)
+├── parent:      the previous commit by the same author   <- causal chain
+├── gpgsig:      the author's key signature               <- identity
 └── message:
-      第二条消息                                ← 人类可读正文
+      the second message                                  <- human-readable body
 
-      ImmuLog-Seq: 2                          ← 单调序号（防回滚）
-      ImmuLog-Retracts: <被撤回的 OID>         ← 撤回（可选）
-      ImmuLog-Receipt: <我确认收到的对方 OID>   ← 回执（可选）
+      ImmuLog-Seq: 2                                      <- monotonic sequence
+      ImmuLog-Retracts: <OID being retracted>             <- optional
+      ImmuLog-Receipt: <OID I confirm receiving>          <- optional
 ```
 
-Trailer 是 Git 原生的键值语法，`%(trailers:key=...,valueonly)` 可直接提取，**人可读、机器可解析、`git log` 里直接看得见**。
+Trailers are native Git key/value syntax, extractable directly with
+`%(trailers:key=...,valueonly)`: **human-readable, machine-parseable, and
+visible in plain `git log`.**
 
-**不使用 `--allow-empty`**——那是为了绕过 index 才需要的 hack（见 §5.1）。
+**No `--allow-empty`** — that hack exists only to work around the index (see §5.1).
 
 ---
 
-## 4. 身份与签名
+## 4. Identity and signing
 
-### 4.1 身份 = 密钥，不是 author 字段
+### 4.1 Identity is a key, not the author field
 
-原型把 `git config user.name/email` 当身份用，实测可以零成本冒名：
+The prototype used `git config user.name/email` as identity, which can be
+impersonated at zero cost:
 
 ```
-GIT_AUTHOR_NAME='管理员 <img src=x onerror=alert(1)>' git commit --author='管理员 <admin@x>'
-→ author=管理员 <admin@x>     ← 无任何校验
+GIT_AUTHOR_NAME='admin <img src=x onerror=alert(1)>' git commit --author='admin <admin@x>'
+-> author=admin <admin@x>     <- no validation whatsoever
 ```
 
-ImmuLog 用 **Git 原生 commit 签名**：
+ImmuLog uses **native Git commit signing**:
 
 ```bash
 git config gpg.format ssh
 git config user.signingkey ~/.ssh/id_ed25519.pub
-git commit-tree -S <tree> -p <parent>     # 签名白送，零代码
+git commit-tree -S <tree> -p <parent>     # signing for free, zero code
 ```
 
-签名覆盖 commit 内容 + tree，因此：
+The signature covers the commit contents and the tree, therefore:
 
-- 谁说的 = **可验证的**
-- `author: 张三` = **只是给人看的标签**
+- Who said it is **verifiable**
+- `author: Alice` is **a label for humans only**
 
-### 4.2 身份不可由前端指定
+### 4.2 The frontend cannot choose an identity
 
-前端**永远不发**作者字段。作者由服务端配置的密钥决定。这从结构上消灭了「伪造他人身份」这条路径。
+The frontend **never sends** an author field. The author is determined by the
+key configured on the server. That removes the "impersonate someone else" path
+structurally.
 
-### 4.3 密钥轮换
+### 4.3 Signing key rotation
 
-换密钥 = 一条**密钥轮换公告** commit：由**旧密钥**签名，在 trailer 里声明新密钥的指纹。
+Rotating a key means one **key rotation notice** commit: signed by the **old**
+key, declaring the new key's fingerprint in a trailer.
 
 ```
-密钥轮换公告
+signing key rotation
 
 ImmuLog-Kind: rotate
 ImmuLog-Seq: 7
-ImmuLog-Key: SHA256:新指纹
+ImmuLog-Key: SHA256:<new fingerprint>
 ```
 
-同步方按一条规则校验整条链：
+Peers check the whole chain against one rule:
 
-> **密钥只能通过「由旧密钥签名、并明文声明新密钥的轮换公告」改变。**
+> **A key may only change through a rotation notice that is signed by the old
+> key and plainly declares the new one.**
 
-于是「换密钥」与「换人」被区分开：**合法轮换一定留痕，没留痕的密钥变更就是攻击**，
-判定为 `reason=keychain` 并留告警、拒绝推进。
+That separates "changed keys" from "changed people": **a legitimate rotation
+always leaves a trace, and a key change with no trace is an attack**, reported as
+`reason=keychain` with an alarm, and the advance is refused.
 
-顺序不能反：**先公告（此时配置还是旧密钥），再换配置**。
-`git commit-tree -S<keyid>` 在 ssh 格式下解析的是密钥引用而非指纹，
-跨密钥签名没有可移植写法——所以把顺序约束显式写在 `DeclareKey` 的文档里，
-而不是假装能自动处理。
+Order matters: **announce first (while the config still holds the old key), then
+switch config.** In ssh mode `git commit-tree -S<keyid>` resolves a key
+reference rather than a fingerprint, and there is no portable way to cross-sign —
+so the ordering constraint is written explicitly in `DeclareKey`'s documentation
+instead of pretending it can be automated.
 
-**诚实标注一个边界**：若历史前缀全是未签名的，首次出现的签名密钥无法被任何东西背书
-（未签名的前缀本来就保护不了）。这种情况会被接受，但只意味着**从此才开始可验证**。
+**One honest boundary**: if the whole prefix of the history is unsigned, the
+first signing key has nothing to vouch for it (an unsigned prefix cannot be
+protected after the fact). That case is accepted, and it only means **the feed
+becomes verifiable from there on**.
 
 ---
 
-## 5. 写入路径
+## 5. The write path
 
-### 5.1 只用 `commit-tree`，永不用 `commit`
+### 5.1 Only `commit-tree`, never `commit`
 
 | | `git commit` | `git commit-tree` |
 |---|---|---|
-| index | 需要 | **不需要** |
-| worktree | 需要 | **不需要** |
-| `.lock` 文件 | 会产生 | **不产生** |
-| bare 仓库可用 | ❌ | ✅ |
-| 并发写不同 ref | 冲突 | **天然安全** |
-| 消息注入方式 | 参数拼接（**危险**） | **stdin**（安全） |
+| index | required | **not required** |
+| worktree | required | **not required** |
+| `.lock` file | produced | **not produced** |
+| usable in a bare repo | ❌ | ✅ |
+| concurrent writes to different refs | conflict | **inherently safe** |
+| how the message is injected | argument concatenation (**dangerous**) | **stdin** (safe) |
 
-实测：在 bare 仓库里 `commit-tree` 无 worktree、无 index、无锁即可造 commit。
+Measured: in a bare repository `commit-tree` creates a commit with no worktree,
+no index and no lock.
 
 ```bash
-echo "第二条消息" | git commit-tree <tree> -p <parent>
+echo "the second message" | git commit-tree <tree> -p <parent>
 ```
 
-### 5.2 ref 更新一律用 CAS
+### 5.2 Every ref update goes through CAS
 
 ```bash
 git update-ref refs/feeds/alice <new> <old>
 ```
 
-`<old>` 不匹配 → **拒绝**（实测 `exit 128, cannot lock ref`）。
+When `<old>` does not match, git **refuses** (measured: `exit 128, cannot lock
+ref`).
 
-> **这一行就是「本地见证锚」，就是「拒绝静默改写」。Git 原生，零代码，原子操作。**
+> **That one line is the "local witness anchor", and it is "refuse silent
+> rewrites". Native Git, zero code, atomic.**
 
-多点更新用 `git update-ref --stdin -z`（原子事务）。
+Multi-ref updates use `git update-ref --stdin -z` (an atomic transaction).
 
-### 5.3 写入的完整时序
+### 5.3 The full write sequence
 
 ```
 POST /api/commit
-   │
-   ├─ 1. 校验签名密钥存在
-   ├─ 2. 组装 trailer（seq / retracts / receipt）
-   ├─ 3. git commit-tree -S          → 得到新 OID
-   ├─ 4. git update-ref <ref> <new> <old>   ← CAS，失败即中止
-   ├─ 5. 广播 SSE 事件
-   └─ 6. 返回 201 { oid, seq }
+   |
+   |- 1. check that a signing key exists
+   |- 2. assemble trailers (seq / retracts / receipt)
+   |- 3. git commit-tree -S                  -> a new OID
+   |- 4. git update-ref <ref> <new> <old>    <- CAS; abort on failure
+   |- 5. broadcast the SSE event
+   '- 6. return 201 { oid, seq }
 ```
 
-**第 4 步失败 = 有人抢先了或本地被篡改**，必须原样返回错误，**不能吞掉**。
+**A failure at step 4 means someone got there first, or the local state was
+tampered with.** The error must be returned verbatim and **never swallowed**.
 
 ---
 
-## 6. 撤回与完整性
+## 6. Retraction and integrity
 
-### 6.1 撤回 = 一条追加事件
+### 6.1 A retraction is an appended event
 
 ```bash
 git commit-tree ... <<EOF
-撤回请求
+retraction request
 
-ImmuLog-Retracts: <目标 OID>
-ImmuLog-Reason: 发错了
+ImmuLog-Retracts: <target OID>
+ImmuLog-Reason: posted in the wrong channel
 EOF
 ```
 
-- **默认 UI**：渲染成 `[已撤回]`
-- **可展开**：任何持有副本的人都能看到原文
-- **永不删除**：原 object 仍在
+- **Default UI**: rendered as `[retracted]`
+- **Expandable**: anyone holding a copy can still read the original
+- **Never deleted**: the original object remains
 
-如果做成「撤回后连自己也看不到」，用户会直接换软件——**那是产品自杀**。
+Turning this into "after retracting, even you cannot see it" would make users
+switch products — **that is product suicide**.
 
-### 6.2 让合法重写也必须留痕
+### 6.2 Make legitimate rewrites leave a trace too
 
-用户本人也会 rebase、reset、换密钥。如果一见引用重写就报「攻击」，会天天误报。
+Users themselves rebase, reset and rotate keys. Reporting every reference
+rewrite as an "attack" would mean daily false alarms.
 
-**解法**：合法重写 = 一条**签名过的重写公告**，用旧密钥声明「我于 <时刻> 重写了从 `<OID>` 之后的历史」。
+**The answer**: a legitimate rewrite is a **signed rewrite notice**, using the
+old key to declare "I rewrote history after `<OID>` at `<time>`".
 
-判定规则因此变得极干净：
+The rule then becomes very clean:
 
-| 情况 | 判定 |
+| Situation | Verdict |
 |---|---|
-| 有公告 + 签名有效 + 公告锚点 = 本地见证 | 用户合法重写，接受 |
-| **无公告 / 签名无效 / 锚点对不上** | **铁证**，无需犹豫 |
+| notice present + signature valid + anchor matches the local witness | legitimate rewrite, accept |
+| **no notice / invalid signature / anchor mismatch** | **conclusive evidence**, no hesitation |
 
-> **把攻击从「可以伪装成正常操作」变成「必须出示一份造不出来的签名」。**
+> **This turns an attack from "disguisable as normal operation" into "must
+> present a signature that cannot be produced".**
 
-### 6.3 完整性四层
+### 6.3 Four layers of integrity
 
-| 层 | 机制 | 拦住什么 |
+| Layer | Mechanism | What it stops |
 |---|---|---|
-| L1 | **本地见证锚**（`update-ref` 的 CAS + 本地记录） | 回滚、引用重写 |
-| L2 | **单调序号**（签名过的 `ImmuLog-Seq`） | 回退到合法旧 commit |
-| L3 | **回执链**（我的 commit 引用你的 OID） | 单方面删除（会留下悬挂引用） |
-| L4 | **快照 gossip + 外部锚定** | 分裂视图、全局重写 |
+| L1 | **local witness anchor** (`update-ref` CAS + a local record) | rollback, reference rewrite |
+| L2 | **monotonic sequence** (a signed `ImmuLog-Seq`) | rewinding to a legitimate older commit |
+| L3 | **receipt chain** (my commit references your OID) | unilateral deletion (it leaves a dangling reference) |
+| L4 | **snapshot gossip + external anchoring** | split view, global rewrite |
 
-**L3 值得单独说**：alice 的第 42 条被 bob 的回执引用着，而 bob 的 feed 由 bob 签名、你自己本地也有副本。管理员想删掉它，必须**同时改写 alice 和 bob 两条 feed**——**两把私钥他都没有**。他唯一能做的是「不回」，那你会立刻看到一个填不上的洞。
+**L3 deserves its own paragraph**: alice's 42nd message is referenced by bob's
+receipt, and bob's feed is signed by bob and copied onto your machine. To delete
+it, an admin must **rewrite both alice's and bob's feeds at once** — **two
+private keys they do not have**. The only thing they can do is "not serve it",
+and then you immediately see a hole nobody can patch.
 
-**L4 复用现成轮子**：快照用 Merkle root，一致性证明抄 Certificate Transparency 的 STH / consistency proof 设计，客户端之间互发快照哈希比对以检测 split view。周期性地把快照哈希交给 OpenTimestamps 之类的服务做外部锚定。
+**L4 reuses existing wheels**: the snapshot is a Merkle root, the consistency
+proof follows Certificate Transparency's STH / consistency-proof design, and
+clients exchange snapshot hashes to detect a split view. Periodically hand the
+snapshot hash to something like OpenTimestamps for external anchoring.
 
-### 6.4 必须诚实说明的边界
+### 6.4 Boundaries that must be stated honestly
 
-| 限制 | 说明 |
+| Limit | Explanation |
 |---|---|
-| 私钥泄露 | 可以永久改写自己的历史，签名救不了。只能靠密钥轮换 + 撤销公告 |
-| 时间戳不可信 | commit date 是本机时钟。只有外部锚定才有意义 |
-| 全量重写 + 全部副本下线 | 无解。强度上限 = 副本分布广度 |
-| 新用户 bootstrap | **无法验证全部历史**。只能信任一组独立见证人签名的 checkpoint |
-| SHA-1 | 已实践碰撞。Git 有加固实现；SHA-256 仓库格式尚未完成互通迁移，`object-format` 要设计成可配置项 |
+| Private key leak | The owner can rewrite their own history forever; signatures cannot save you. Only key rotation plus a revocation notice can |
+| Timestamps are untrustworthy | commit date is the local clock. Only external anchoring means anything |
+| Full rewrite + every replica offline | Unsolvable. The ceiling is the breadth of replica distribution |
+| New user bootstrap | **Cannot verify the whole history.** They must trust a checkpoint signed by a set of independent witnesses |
+| SHA-1 | Practical collisions exist. Git ships a hardened implementation; the SHA-256 repository format has not completed interoperable migration, so `object-format` must stay configurable |
 
-**新用户 bootstrap 是必须显式写出来的信任假设，不是漏洞。** 在 UI 里告诉用户「你的历史完整性由这 N 个见证人背书，你可以自己成为见证人以降低依赖」。
+**New-user bootstrap is a trust assumption that has to be written down, not a
+vulnerability.** Tell the user in the UI: "the integrity of your history is
+vouched for by these N witnesses, and you can become one to reduce that
+dependency".
 
-### 6.5 加密世代与「可遗忘」
+### 6.5 Encryption epochs and "forgettability"
 
-到此为止的设计里有一条**硬冲突**：
+Up to here the design contains a **hard conflict**:
 
-> 我们承诺「永不删除」——这是完整性。但用户总会有想说错话的时候——这是隐私。
+> We promise "never delete" — that is integrity. But users will always want to
+> take something back — that is privacy.
 
-明文状态下这个冲突**无解**：你只能二选一。解决办法不是选一个，而是**让删除不再需要删除**。
+In plaintext that conflict is **unsolvable**: you must pick one. The answer is
+not to pick one, but to **make deletion unnecessary**.
 
-#### 机制
+#### The mechanism
 
 ```
-正文  → AEAD 加密（密钥来自 epoch）→ 密文进 git 对象（可自由复制）
-密钥  → 按 epoch 分组，用**每个收件人的公钥各封一份** → refs/keys/<n>
-明文密钥 → 只存本机，不进 git、不参与同步
+body    -> AEAD encryption (key from the epoch) -> ciphertext into a git object (freely copyable)
+key     -> grouped into epochs, wrapped once per recipient's public key -> refs/keys/<n>
+plaintext key -> stored only on this machine; never in git, never synced
 ```
 
-「遗忘」= **丢弃那个 epoch 的明文密钥**。密文仍在、哈希链完整、副本仍在——但没人解得开。
-这就是 crypto-shredding。
+"Forgetting" means **discarding that epoch's plaintext key**. The ciphertext
+remains, the hash chain stays intact, the replicas remain — but nobody can open
+it. That is crypto-shredding.
 
-#### 逐收件人封装解决的是那个「相反的要求」
+#### Per-recipient wrapping satisfies the two opposite demands
 
-| | 想要什么 |
+| | What it wants |
 |---|---|
-| 完整性 | 副本**越广**越强 |
-| 隐私 | 密钥传播范围**越窄**越好 |
+| Integrity | replicas **as wide as possible** |
+| Privacy | key distribution **as narrow as possible** |
 
-把 epoch 密钥用每个成员的公钥各封一份（X25519 + HKDF-SHA256 + AES-GCM，全部标准库），
-就同时满足了：**密文随仓库自由复制，而只有成员解得开。**
-每次封装的临时密钥都是新的，所以同一个密钥的两份封装互不可比——外部看不出谁是同一个房间的。
+Wrapping the epoch key once per member's public key (X25519 + HKDF-SHA256 +
+AES-GCM, all standard library) satisfies both: **the ciphertext replicates freely
+with the repository, and only members can open it.** Every wrap uses a fresh
+ephemeral key, so two wraps of the same key are not comparable — an outsider
+cannot tell which members are in the same room.
 
-#### 由此白得两条属性
+#### Two properties that come for free
 
-1. **后来者读不到加入之前的世代。** 新成员只会被封装进之后的 epoch ——
-   这一条**不依赖任何人配合**，是单方面可保证的。
-2. **密钥泄露的影响面被限制在一个 epoch 内。** 拿到 epoch N+1 的密钥，读不了 epoch N。
+1. **A late joiner cannot read epochs created before they joined.** They are only
+   ever wrapped into later epochs — and this **needs nobody's cooperation**; it is
+   guaranteed unilaterally.
+2. **A key leak is contained to one epoch.** Holding epoch N+1's key tells you
+   nothing about epoch N.
 
-#### 「丢弃」必须是一个决定，而不是一次文件删除
+#### "Discard" must be a decision, not a file deletion
 
-第一版实现漏掉了这一点：删掉本地密钥文件之后，`openEpochKey` 会**从链上的封装里
-把它重新解开**（因为你就是收件人），删除成了假动作。所以丢弃要在本地留下**持久标记**，
-并且 `SaveEpochKey` 拒绝写回已丢弃的世代。
+The first implementation missed this: after deleting the local key file,
+`openEpochKey` **unwrapped it again from the copy on the chain** (you are a
+recipient, after all), so the deletion was a no-op. Discarding must therefore
+leave a **persistent marker**, and `SaveEpochKey` must refuse to write back an
+epoch that was discarded.
 
-同理，`IsShredded` 的检查必须排在「本地找不到就去链上找」之前。
+By the same logic, the `IsShredded` check must come **before** the "not found
+locally, so look on the chain" fallback.
 
-#### 丢弃是可审计的
+#### Discarding is auditable
 
-`ShredEpoch` 会在链上追加一条 `ImmuLog-Kind: shred` 公告。
-任何人都能看到「谁在何时丢弃了哪个世代」——**却看不到被保护的内容**。
+`ShredEpoch` appends an `ImmuLog-Kind: shred` notice to the chain. Anyone can
+see **who discarded which generation, and when** — while seeing nothing of what
+it protected.
 
-这就是「可证明的遗忘」：既有删除，又有可验证性。单独哪一个都做不到。
+That is "provable forgetting": deletion *and* verifiability. Neither is
+achievable alone.
 
-#### 它做不到什么（必须说清楚）
+#### What it cannot do (stated plainly)
 
 | | |
 |---|---|
-| **不隐藏「有过这条消息」** | OID、作者、时间戳、序号全都还在。**这不是匿名** |
-| **只丢本机那一份** | 别人手里的副本不会消失——除非**每个持有者都照做** |
-| **对已经看到的人无效** | 它防的是未来的访问者（后来 clone 的、恢复的备份） |
-| **不是物理擦除** | 覆写+删除对日志型文件系统和闪存磨损均衡不构成保证。强度上限是保管纪律 |
-| **节点能读明文** | 你的节点持有你的私钥，所以它解密后才经 SSE 发给你。用别人的托管节点 = 他能读 |
+| **Does not hide that a message existed** | OID, author, timestamp and sequence number all remain. **This is not anonymity** |
+| **Discards only this machine's copy** | Copies elsewhere do not vanish — unless **every holder does the same** |
+| **Does nothing about someone who already read it** | It protects against future readers (later clones, restored backups) |
+| **Is not a physical erase** | Overwrite-plus-delete is no guarantee on journaling filesystems or flash wear levelling. The ceiling is custody discipline |
+| **The node can read plaintext** | Your node holds your private key, so it decrypts before sending over SSE. Using someone else's hosted node means they can read it |
 
-#### 加密的代价
+#### What encryption costs
 
-服务端失去内容能力：不能索引、不能搜索、不能做内容审核。全部得挪到客户端。
-这是买隐私付的钱，没有折扣。
+The server loses all content capability: no indexing, no search, no moderation.
+All of that has to move to the client. That is the price of privacy, and there
+is no discount.
 
 ---
 
-## 7. 前端 ↔ 后端通信设计
+## 7. How the frontend talks to the backend
 
-> 这一节回答：**浏览器和后端怎么连。**
+> This section answers: **how does a browser connect to the backend?**
 
-### 7.1 结论：非对称双通道
+### 7.1 The answer: two asymmetric channels
 
 ```
-                    ┌────────────────────────────────┐
-   上行（低频）      │  普通 HTTP POST                │
-   浏览器 ─────────► │  POST /api/commit              │
-                    │  ← 同步返回 { oid, seq }        │
-                    └────────────────────────────────┘
+                  +--------------------------------+
+  upstream (rare) |  plain HTTP POST               |
+  browser ------->|  POST /api/commit              |
+                  |  <- returns { oid, seq }       |
+                  +--------------------------------+
 
-                    ┌────────────────────────────────┐
-   下行（高频）      │  SSE  (text/event-stream)      │
-   浏览器 ◄───────── │  GET /api/stream               │
-                    │  ← 长连接，服务器单向推          │
-                    └────────────────────────────────┘
+                  +--------------------------------+
+  downstream (hot)|  SSE  (text/event-stream)      |
+  browser <-------|  GET /api/stream               |
+                  |  <- long-lived, server push    |
+                  +--------------------------------+
 ```
 
-**为什么要非对称？** 因为两个方向的本质不同：
+**Why asymmetric?** Because the two directions are fundamentally different:
 
-| | 上行 | 下行 |
+| | Upstream | Downstream |
 |---|---|---|
-| 频率 | 低（人打字） | 高（所有人说话） |
-| 需要 | **确认、幂等、重试、错误码** | 低延迟、广播、断线续传 |
-| 最合适的轮子 | **HTTP** | **SSE** |
+| Frequency | low (a human typing) | high (everyone talking) |
+| Needs | **acknowledgement, idempotence, retries, error codes** | low latency, broadcast, resume |
+| Right wheel | **HTTP** | **SSE** |
 
-用 WebSocket 做上行，等于**自己重新发明 HTTP 的状态码、幂等和重试**。复用 HTTP 是「能复用轮子就复用轮子」的直接体现。
+Using WebSocket for the upstream means **reinventing HTTP's status codes,
+idempotence and retries yourself**. Reusing HTTP here is "reuse the wheel" in
+its most literal form.
 
-### 7.2 上行：只有两个端点
+### 7.2 Upstream: two endpoints
 
-| 方法 | 路径 | 作用 |
+| Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/` | `index.html`（`embed` 内嵌，**同源 → 零 CORS 配置**） |
-| `GET` | `/api/stream` | SSE 事件流（下行 + 首屏历史） |
-| `POST` | `/api/commit` | **唯一写入口** |
-| `GET` | `/api/snapshot` | 当前快照哈希（供对端 gossip） |
+| `GET` | `/` | `index.html` (embedded; **same-origin, so zero CORS config**) |
+| `GET` | `/api/stream` | SSE event stream (downstream plus first screen) |
+| `POST` | `/api/commit` | **the only write entry** |
+| `GET` | `/api/snapshot` | the current snapshot digest (for peer gossip) |
 
-`POST /api/commit` 请求体：
+`POST /api/commit` body:
 
 ```json
-{ "kind": "msg", "body": "你好" }
-{ "kind": "retract", "retracts": "<oid>", "reason": "发错了" }
+{ "kind": "msg", "body": "hello" }
+{ "kind": "retract", "retracts": "<oid>", "reason": "posted in the wrong channel" }
 { "kind": "receipt", "refs": ["<oid>", "<oid>"] }
 ```
 
-响应：
+Responses:
 
 ```json
 201 { "oid": "...", "seq": 42, "at": "..." }
 4xx { "error": "cas_failed", "expected": "<old>", "actual": "<new>" }
 ```
 
-**`cas_failed` 必须原样暴露给前端**，因为它是篡改检测的信号源，不能吞掉。
+**`cas_failed` must reach the frontend intact** — it is the tamper-detection
+signal and must not be swallowed.
 
-**用 `kind` 区分事件类型，而不是开三个端点。** 一个写入口，前端只需要一个 fetch 函数，语义扩展不用改路由——这同时满足「精简」和「易于扩展」。
+**Events are told apart by `kind`, not by three endpoints.** One write entry
+means the frontend needs one fetch helper, and adding a semantic never touches
+routing — which satisfies "minimal" and "extensible" at the same time.
 
-### 7.3 下行：SSE，零依赖
+### 7.3 Downstream: SSE, zero dependencies
 
-`text/event-stream` 是 `net/http` + `http.Flusher` 就能实现的标准协议，**不需要任何第三方库**。
+`text/event-stream` is a standard protocol you can implement with `net/http` and
+`http.Flusher` — **no third-party library required**.
 
-事件格式：
+Frame format:
 
 ```
 retry: 3000
 
 id: 3f2a1b9c...
 event: msg
-data: {"oid":"3f2a...","author":"...","body":"你好","seq":42}
+data: {"oid":"3f2a...","author":"...","body":"hello","seq":42}
 
 id: 7d1e0f4a...
 event: retract
-data: {"oid":"7d1e...","retracts":"3f2a...","reason":"发错了"}
+data: {"oid":"7d1e...","retracts":"3f2a...","reason":"posted in the wrong channel"}
 
 event: alarm
 data: {"kind":"rewrite","feed":"<pubkey>","local":"3f2a...","remote":"9c8b..."}
@@ -454,442 +515,506 @@ data: {"kind":"rewrite","feed":"<pubkey>","local":"3f2a...","remote":"9c8b..."}
 : ping
 ```
 
-事件类型：
+Event types:
 
-| `event` | 含义 |
+| `event` | Meaning |
 |---|---|
-| `hello` | 连接建立，带当前 head / 游标 / 服务器时间 |
-| `msg` | 新消息 |
-| `retract` | 撤回 |
-| `alarm` | **篡改告警**（§6.3 的检测结果，前端渲染成删不掉的系统消息） |
-| `snapshot` | 快照哈希（gossip 用） |
-| `checkpoint` | 定期锚点 |
+| `hello` | connection established, carrying head / cursor / server time |
+| `msg` | a new message |
+| `retract` | a retraction |
+| `alarm` | **a tampering alarm** (§6.3's verdict, rendered as a system message the attacker cannot delete) |
+| `snapshot` | a snapshot digest (for gossip) |
+| `checkpoint` | a periodic anchor |
 
-### 7.4 断线续传：白送的机制
+### 7.4 Resume-after-disconnect comes free
 
-**这是选 SSE 而不是 WebSocket 的核心收益。**
+**This is the core payoff of choosing SSE over WebSocket.**
 
-SSE 的 `id:` 字段和浏览器的 `EventSource` 组合，天然提供：
+SSE's `id:` field plus the browser's `EventSource` gives you, for nothing:
 
-1. **自动重连**（无需写一行重连代码）
-2. **游标续传**：重连时浏览器自动带上请求头 `Last-Event-ID: <最后收到的事件 id>`
+1. **Automatic reconnection** (not one line of reconnect code)
+2. **Cursor-based resume**: on reconnect the browser sends
+   `Last-Event-ID: <last event id received>`
 
-而我们把**事件 id 设成 commit 的 OID**，于是：
+And our event ids **are commit OIDs**, so:
 
 ```
 Last-Event-ID: 3f2a1b9c...
-        ↓
-服务端:    git log --format=... 3f2a1b9c..<tip>
-        ↓
-精确续传，一条不多一条不少
+        |
+server: git log --format=... 3f2a1b9c..<tip>
+        |
+exactly the missing messages, no more and no fewer
 ```
 
-> **事件 ID 就是内容哈希 —— 天然全局唯一、天然可验证、天然是续传游标。**
-> 哈希的第三个用途，白送。
+> **The event id is a content hash — inherently globally unique, inherently
+> verifiable, inherently a resume cursor.** That is a third use for hashing,
+> and it is free.
 
-**注意区分两种游标**（这是关键的架构纪律）：
+**Two cursors must not be confused** (this is a key architectural discipline):
 
-| 游标 | 位置 | 用途 | 可信度 |
+| Cursor | Lives in | Purpose | Trust |
 |---|---|---|---|
-| `Last-Event-ID` | 浏览器 | **性能机制**：续传 | 由服务器间接影响，**不可信** |
-| 本地见证锚 | 服务端 | **安全机制**：检测改写 | 本地持有，**可信** |
+| `Last-Event-ID` | the browser | **a performance mechanism**: resume | indirectly server-influenced, **untrusted** |
+| local witness anchor | the server | **a security mechanism**: rewrite detection | held locally, **trusted** |
 
-> **绝对不能用 SSE 游标代替见证锚。** 服务器能重置你手里的游标，但不能伪造你本地的见证文件。
+> **An SSE cursor must never stand in for a witness anchor.** A server can reset
+> the cursor in your browser; it cannot forge your local witness record.
 
-### 7.5 首屏历史复用同一条连接
+### 7.5 The first screen reuses the same connection
 
-不需要单独的「加载历史」接口：
-
-```
-GET /api/stream                      ← 前端启动时唯一要做的事
-  event: msg     × N                 ← 服务端从最近 N 条开始回放（git log -n）
-  event: hello                       ← 回放完毕，切换成实时模式
-  event: msg     ...                 ← 之后是增量
-```
-
-一个连接，从历史无缝过渡到实时，**前端不需要维护「已加载到哪」的状态机**。
-
-分页由服务端掌握：首次先推最近 50 条，更早的历史在用户上滑时用 `GET /api/stream?since=<oid>&backward=1` 补拉（同一套代码路径）。
-
-### 7.6 乐观投递：把验证移出关键路径
+There is no separate "load history" endpoint:
 
 ```
-用户按回车
-   │
-   ├─ 立即上屏（灰色，标记 ⚠️ 未确认）      ← 零延迟
-   │
-   └─ POST /api/commit
-         ├─ 201 → 用返回的 OID 把临时气泡替换成真身
-         ├─ 4xx cas_failed → 标红，附「被抢先/历史冲突」
-         └─ 网络失败 → 自动重试（指数退避）
-
-同时：SSE 可能也推来这条消息
-   → 用 OID 去重（已经乐观渲染过了）
+GET /api/stream                      <- the only thing the frontend does at startup
+  event: msg     x N                 <- the server replays the last N (git log -n)
+  event: hello                       <- replay done, switching to live mode
+  event: msg     ...                 <- deltas from here on
 ```
 
-**上行确认和下行广播是两条独立路径，靠 OID 去重收敛。** 这是「可验证（verifiable），而非已验证（verified）」在协议层的落地。
+One connection, moving seamlessly from history into live, and **the frontend
+never maintains a "how far have I loaded" state machine**.
 
-### 7.7 心跳与背压
+Paging is the server's business: the last 50 first, and older history on scroll
+via `GET /api/stream?since=<oid>&backward=1` — the same code path.
 
-| 问题 | 做法 |
+### 7.6 Optimistic delivery: keep verification off the critical path
+
+```
+user presses Enter
+   |
+   |- render immediately (grey, marked "unconfirmed")   <- zero latency
+   |
+   '- POST /api/commit
+         |- 201 -> replace the placeholder with the real OID
+         |- 4xx cas_failed -> mark red, "lost the race / conflicting history"
+         '- network failure -> retry with exponential backoff
+
+meanwhile the SSE stream may deliver the same message
+   -> dedupe by OID (it was already rendered optimistically)
+```
+
+**The upstream acknowledgement and the downstream broadcast are independent
+paths that converge by OID.** That is "verifiable, not verified" landing at the
+protocol layer.
+
+### 7.7 Heartbeat and backpressure
+
+| Problem | Approach |
 |---|---|
-| 中间代理掐断空闲连接 | 每 15–30 秒发一行注释 `: ping` |
-| 客户端太慢 | per-client 有界缓冲；满了就断开，让浏览器重连并走 `Last-Event-ID` 续传 |
-| 慢客户端拖垮服务端 | 广播用非阻塞 send，丢弃慢客户端**不做阻塞写** |
+| An intermediary cuts an idle connection | a comment line `: ping` every 15–30s |
+| A client is too slow | per-client bounded buffer; when full, drop it and let the browser reconnect and resume via `Last-Event-ID` |
+| A slow client drags down the server | broadcast with non-blocking sends; **never block the broadcast** |
 
-### 7.8 降级路径
+### 7.8 Degradation path
 
-如果某些企业代理会缓冲 `text/event-stream`：
+If some enterprise proxy buffers `text/event-stream`:
 
-- 先用 `X-Accel-Buffering: no` 响应头尝试关闭代理缓冲
-- 仍失败 → 降级为 `GET /api/stream?poll=1`，服务端立即返回一批事件并关闭连接，浏览器靠 `retry:` 字段决定的间隔重试
+- first try `X-Accel-Buffering: no` to switch proxy buffering off
+- if that fails, degrade to `GET /api/stream?poll=1`: the server returns a batch
+  immediately and closes, and the browser retries at the interval set by `retry:`
 
-**同一套服务端代码路径，只是连接不保持。** 前端 `EventSource` 代码完全不用改。
+**The same server code path, only the connection is not held.** The frontend's
+`EventSource` code does not change at all.
 
-### 7.9 鉴权：分清两种信任
+### 7.9 Authentication: two kinds of trust
 
-这是最容易混淆的地方，必须分清：
+This is the easiest thing to conflate, and it must be kept apart:
 
-| 层 | 机制 | 保护什么 |
+| Layer | Mechanism | What it protects |
 |---|---|---|
-| **传输层** | 启动时生成 token → cookie | 「谁有权连到我的本地节点」 |
-| **内容层** | **签名 commit** | 「这条消息真的是 alice 说的」 |
+| **Transport** | a token generated at startup, stored in a cookie | "who may connect to my local node" |
+| **Content** | **signed commits** | "alice really said this" |
 
-> **HTTP 鉴权只保护本地服务，不保护仓库。**
-> 消息的真实性**永远不依赖** HTTP 认证——即使有人拿到了你的 token，他也只能发**他自己签名**的消息，伪造不了任何人。
+> **HTTP auth protects the local service, not the repository.**
+> The authenticity of a message **never depends** on HTTP authentication — even
+> someone who steals your token can only send messages **they signed**. They
+> cannot impersonate anyone.
 
-这个区分很重要：它让鉴权退化成「防骚扰」而不是「保安全」，因此可以选择最简实现（一个 token 存 cookie），不必引入 OAuth/JWT。
+The distinction matters because it demotes authentication to "anti-harassment"
+rather than "security", which means the simplest implementation (a token in a
+cookie) is sufficient — no OAuth, no JWT.
 
-### 7.10 为什么不用 WebSocket
+### 7.10 Why not WebSocket
 
 | | SSE | WebSocket |
 |---|---|---|
-| 依赖 | **`net/http` + `Flusher`** | `gorilla/websocket` + `x/net` |
-| 自动重连 | **浏览器内置** | 自己写 |
-| 断线续传 | **`Last-Event-ID` 内置** | 自己做应用层协议 |
-| 方向 | 单向 | 全双工 |
-| 我们是否需要全双工 | **不需要**（上行走 POST） | — |
+| Dependency | **`net/http` + `Flusher`** | `gorilla/websocket` + `x/net` |
+| Auto-reconnect | **built into the browser** | write it yourself |
+| Resume | **`Last-Event-ID`, built in** | design an application protocol |
+| Direction | one-way | full duplex |
+| Do we need full duplex | **no** (the upstream is POST) | — |
 
-最后一行是关键：**上行已经交给 HTTP 了，全双工就是浪费。**
+That last row is the point: **once the upstream is HTTP, full duplex is pure
+waste.**
 
-顺带一提：原型项目里的 WebSocket `readPump` 把浏览器发来的消息直接广播给所有人、**却不落库**——它本来需要的也是单向推送。把死代码变成设计决策，顺手砍掉整个 `Hub`/`Client`/channel 状态机。
+Incidentally: the prototype's WebSocket `readPump` broadcast browser messages to
+everyone **without persisting them** — it needed one-way push all along. Turning
+dead code into a design decision removes the whole `Hub`/`Client`/channel state
+machine.
 
 ---
 
-## 8. 界面（MD3 Expressive）
+## 8. Interface (MD3 Expressive)
 
-### 8.1 视觉语言：三根支柱，不是材质
+### 8.1 Visual language: three pillars, not materials
 
-MD3 Expressive 用**形状、动效、色彩**表达情绪和层级，**不用纹理和材质**。
+MD3 Expressive uses **shape, motion and colour** to express emotion and
+hierarchy — **not texture and material**.
 
-所以界面设计的第一原则是：
+So the first rule of the interface is:
 
-> **把状态编码成形状，而不是编码成文字。**
+> **Encode state as shape, not as text.**
 
-沉浸式的"审计日志"式拟物是反模式——它把产品信息量当成了视觉风格。正确做法是让信息**在需要时可见**，而不是时刻铺满屏幕。
+An immersive "audit log" skeuomorphism is an anti-pattern: it mistakes how much
+information the product carries for a visual style. The right move is to make
+information **visible when needed**, not permanently covering the screen.
 
-### 8.2 技术选型：Beer CSS CDN + 原生 ESM，零构建
+### 8.2 Stack: Beer CSS over CDN, native ESM, no build step
 
-| 决策 | 值 |
+| Decision | Value |
 |---|---|
-| CSS 框架 | **Beer CSS 5.0.3**（`cdn.jsdelivr.net/npm/beercss@5.0.3`） |
-| 动态色彩 | `material-dynamic-colors@1.1.4` |
-| JS | **原生 ES modules**，无打包器 |
-| 前端第三方 JS 依赖 | **0** |
+| CSS framework | **Beer CSS 5.0.3** (`cdn.jsdelivr.net/npm/beercss@5.0.3`) |
+| Dynamic colour | `material-dynamic-colors@1.1.4` |
+| JS | **native ES modules**, no bundler |
+| Frontend third-party JS deps | **0** |
 
-**为什么 Vanilla JS 就够：**
+**Why vanilla JS is enough:**
 
-> 前端状态是**单一的、单向的、只追加的**。框架解决的是"状态分散 + 双向绑定 + diff"，而我们没有 diff 需求——DOM 对尾部追加本来就是 O(1) 最优结构。
+> Frontend state is **single, one-way and append-only**. Frameworks solve
+> "scattered state plus two-way binding plus diffing" — and we have no diffing
+> requirement. The DOM is already an O(1) structure for appending at the end.
 >
-> 用框架渲染 append-only 日志，是拿最重的轮子干最轻的活。
+> Rendering an append-only log with a framework is using the heaviest wheel for
+> the lightest job.
 
-**为什么不能引入构建链：** `//go:embed` 是"零依赖单二进制"的柱子。一旦有 `npm run build`，就多出 Node 运行时、`dist/` 同步、dev server，以及"为什么一个防篡改软件要 800 个 npm 包"这个答不上来的问题。
+**Why a build chain is not allowed:** `//go:embed` is the pillar of "one binary,
+zero dependencies". The moment there is an `npm run build`, you acquire a Node
+runtime, a `dist/` directory to keep in sync, a dev server, and the
+unanswerable question "why does a tamper-evidence product need 800 npm
+packages?"
 
-### 8.3 形状即状态
+### 8.3 Shape is state
 
-Beer CSS 自带 35 个 M3 形状，把它们变成状态语汇：
+Beer CSS ships 35 M3 shapes; they become our state vocabulary:
 
-| 状态 | 形状 | 颜色 | 语义 |
+| State | Shape | Colour | Semantics |
 |---|---|---|---|
-| 已验签 | `gem` | `--primary` | 切面、完整、确定 |
-| 待确认 | `loading-indicator` | `--tertiary` | 乐观投递中（旋转） |
-| 未验签 | `circle` | `--secondary` | 未知 |
-| 已撤回 | `slanted` | `--error` | 被切掉 |
-| **篡改告警** | `burst` | `--error` | 炸开 |
+| Verified | `gem` | `--primary` | faceted, whole, settled |
+| Pending | `loading-indicator` | `--tertiary` | optimistic delivery (spinning) |
+| Unverified | `circle` | `--secondary` | unknown |
+| Retracted | `slanted` | `--error` | cut away |
+| **Tampering alarm** | `burst` | `--error` | blown open |
 
-撤回时形状从 `gem` **切到 `slanted`**——这正是 M3 shape-morph 的标准用法，而且它不是装饰，**它就是这个产品的核心叙事**。
+On retraction the shape **switches from `gem` to `slanted`** — which is exactly
+what M3 shape morphing is for, and it is not decoration: **it is the product's
+core narrative.**
 
-### 8.4 主题色 = 房间的创世哈希
+### 8.4 The theme colour is the room's genesis hash
 
-动态色彩（Material You）的种子色取自**房间第一个 commit 的 OID 前 6 位**：
+The dynamic colour (Material You) seed comes from **the first 6 hex digits of the
+room's first commit OID**:
 
 ```js
 ui('theme', `#${genesisOid.slice(0, 6)}`);
 ```
 
-于是：
+Therefore:
 
-> **两个房间颜色相同，就意味着它们的历史同源。**
+> **Two rooms with the same colour have the same history.**
 
-这不是装饰性的换肤——**配色是身份哈希的函数**，零成本地把"内容寻址"这件事透到了视觉层。
+This is not decorative re-skinning — **the palette is a function of the identity
+hash**, carrying content addressing through to the visual layer at zero cost.
 
-### 8.5 三条不可妥协的交互规则
+### 8.5 Three non-negotiable interaction rules
 
-| 规则 | 做法 | 反面 |
+| Rule | How | The opposite |
 |---|---|---|
-| **撤回必须留痕** | 原位删除线 + 形状切到 `slanted`，点开仍可见原文 | 撤回后连自己也看不到 → 用户直接换软件 |
-| **告警不是 toast** | `alarm` 是**插进时间线里的一条封条**，永不自动消失 | 弹窗一闪而过 = 可以装作没看见 |
-| **乐观投递** | 消息先上屏（`pending` 形状），POST 落地后原地换成正身 | 等全链验证再上屏 = 唯一"优化安全导致产品死亡"的路径 |
+| **Retraction leaves a trace** | strike-through in place, shape switched to `slanted`, original still readable on tap | retract and even you cannot see it -> users switch products |
+| **An alarm is not a toast** | an alarm is **a notice sealed into the timeline** that never auto-dismisses | a flash that disappears = deniable |
+| **Optimistic delivery** | the message appears at once (a `pending` shape) and is replaced in place when the POST lands | waiting for full verification before rendering is the one place where "optimising for security kills the product" |
 
-**临时项落地是原地替换**（OID 改写、DOM 不移动），所以用户看到的气泡不会跳。
+**A placeholder is replaced in place** (the OID is rewritten, the DOM does not
+move), so the bubble the user is looking at never jumps.
 
-### 8.6 前端结构（四个"唯一"）
+### 8.6 Frontend structure (four "only" rules)
 
 ```
 web/
-├── index.html              MD3 骨架（Beer CSS 由 CDN 提供）
-├── style.css               只补 Beer 没有的：布局、形状语义、motion、字体
+├── index.html              MD3 skeleton (Beer CSS from CDN)
+├── style.css               only what Beer lacks: layout, shape semantics, motion, fonts
 └── app/
-    ├── main.js             组装与入口（唯一同时知道四层的地方）
-    ├── stream.js           ← 唯一碰 EventSource
-    ├── api.js              ← 唯一碰 fetch
-    ├── store.js            ← 唯一持有状态
-    ├── render.js           ← 唯一碰 document
-    └── mock.js             演示数据源（?demo=1），契约与真实 SSE 相同
+    ├── main.js             assembly and entry (the only one that knows all four layers)
+    ├── stream.js           <- the only place that touches EventSource
+    ├── api.js              <- the only place that touches fetch
+    ├── store.js            <- the only place that holds state
+    ├── render.js           <- the only place that touches document
+    └── mock.js             demo data source (?demo=1), same contract as the real SSE
 ```
 
-> **任何文件都不许跨层调用。**
-> 这与后端的「`gitx` 是唯一能碰 `os/exec` 的包」是**同一条规则的镜像**。
+> **No file may call across layers.**
+> This is the **mirror image** of the backend rule "`gitx` is the only package
+> that may import `os/exec`".
 
-校验方式（应始终成立）：
+The property to verify (and it should always hold):
 
 ```
-EventSource 只出现在 stream.js
-fetch       只出现在 api.js
-document.   只出现在 render.js
+EventSource appears only in stream.js
+fetch       appears only in api.js
+document.   appears only in render.js
 ```
 
-**数据流严格单向：** `stream → store → render`，写路径 `api → store → render`。
+**Data flow is strictly one-way:** `stream -> store -> render`, and on the write
+side `api -> store -> render`.
 
-**`mock.js` 的存在是有意的**：它让界面在后端完成前就能跑，而且因为契约与真实 SSE 完全一致，接通时只需删掉 `?demo=1`——**这正是"四个唯一"纪律的回报**。
+**`mock.js` exists on purpose**: it lets the interface run before the backend is
+finished, and because its contract matches the real SSE exactly, connecting is
+just deleting `?demo=1` — **that is the dividend of the "four only" discipline.**
 
-### 8.7 排版
+### 8.7 Typography
 
-| 用途 | 字体 | 理由 |
+| Use | Font | Why |
 |---|---|---|
-| 显示体 | **Bricolage Grotesque** | 可变（opsz/wdth/wght），有性格，未被用滥 |
-| UI / 正文 | **Roboto Flex** | MD3 Expressive 的自有字体；Expressive 强调排版正是靠它的可变轴 |
-| 哈希（仅元数据） | **Martian Mono** | 半窄技术等宽，只在 `.meta` / `.detail` 里出现 |
+| Display | **Bricolage Grotesque** | variable (opsz/wdth/wght), has character, not overused |
+| UI / body | **Roboto Flex** | MD3 Expressive's own typeface; Expressive's typographic emphasis rides its variable axes |
+| Hashes (metadata only) | **Martian Mono** | semi-condensed technical mono, appearing only in `.meta` / `.detail` |
 
-**哈希信息默认折叠**，点 `.meta` 展开 `.detail` 才看到完整 OID 与签名——这是 §8.1 原则的具体落地。
+**Hash information is collapsed by default**: tapping `.meta` expands `.detail`
+to reveal the full OID and signature — §8.1's principle, applied.
 
-### 8.8 ⚠️ CDN 的供应链问题
+### 8.8 ⚠️ The CDN supply-chain problem
 
-**一个防篡改产品在运行时从第三方 CDN 拉 CSS，是供应链漏洞。**
+**A tamper-evidence product pulling CSS from a third-party CDN at runtime is a
+supply-chain hole.**
 
-这不是洁癖：本项目的全部论点就是「不要信任第三方」，而 `cdn.jsdelivr.net` 是一个能随时改变你界面的第三方。
+This is not pedantry: the whole argument of the project is "do not trust third
+parties", and `cdn.jsdelivr.net` is a third party that can change your interface
+at any moment.
 
-| 阶段 | 做法 |
+| Stage | Approach |
 |---|---|
-| 开发 | CDN（当前实现） |
-| **发布** | **vendor 进 `embed`**，Beer CSS 官方文档有现成的 "LOCAL CDN VERSION" 一节 |
+| Development | CDN (the current implementation) |
+| **Release** | **vendor into `embed`**; Beer CSS documents a ready-made "LOCAL CDN VERSION" |
 
-vendor 需要的文件（实测体积）：
+What vendoring costs (measured):
 
-| 文件 | 体积 |
+| File | Size |
 |---|---|
 | `beer.min.css` | ~88 KB |
 | `beer.min.js` | ~19 KB |
 | `material-dynamic-colors.min.js` | — |
-| **35 个 shape SVG**（`gem.svg` `burst.svg` …） | ~40 KB |
-| **3 个图标字体 woff2** | 主要开销 |
+| **35 shape SVGs** (`gem.svg`, `burst.svg`, ...) | ~40 KB |
+| **3 icon font woff2 files** | the bulk |
 
-合计约 1 MB——对单二进制可以接受。注意两点：
+About 1 MB in total — acceptable for one binary. Two caveats:
 
-1. **shape 的 SVG 是外部文件**（`mask-image: url(gem.svg)`），只 vendor CSS 会导致所有形状失效。
-2. Beer CSS 未加 `-webkit-mask` 前缀，**旧版 Safari 上形状可能不渲染**（现代版本无前缀支持）。
+1. **The shape SVGs are external files** (`mask-image: url(gem.svg)`), so
+   vendoring the CSS alone breaks every shape.
+2. Beer CSS does not emit `-webkit-mask` prefixes, so **shapes may not render on
+   old Safari** (modern versions support the unprefixed property).
 
-### 8.9 两个踩过的 Beer CSS 坑（务必记住）
+### 8.9 Two Beer CSS traps worth remembering
 
-| # | 现象 | 真因 | 对策 |
+| # | Symptom | Real cause | Fix |
 |---|---|---|---|
-| 1 | 副标题离标题一个多字符高 | Beer 有一条特异性 `(0,4,1)` 的全局规则，给**所有跟在兄弟元素后面的 `<p>`** 加 `margin-block-start: 1rem`；`.kv p` 这种 `(0,1,1)` 压不住 | 用它自留的逃生口 `:not([class*=margin])`——给每个 `<p>` 加 `no-margin`，间距改由显式规则控制 |
-| 2 | 键值行整页竖排堆叠 | `style.css` 里一行 **`// 注释`**（CSS 不支持）被解析成选择器的一部分，导致 `.kv { display:flex }` 这条规则**从未生效** | 只能用 `/* */`。已在 `smoke.mjs` 加护栏：花括号平衡 + 选择器不得含 `//` + 关键规则必须在解析结果里 |
+| 1 | a subtitle sits a character too far below its heading | Beer ships a global rule with specificity `(0,4,1)` putting `margin-block-start: 1rem` on **every `<p>` that follows a sibling**; `.kv p` at `(0,1,1)` cannot beat it | use Beer's own escape hatch `:not([class*=margin])` — add `no-margin` to every `<p>`, then set spacing explicitly |
+| 2 | the whole key/value panel stacks vertically | a line of **`// comment`** in `style.css` (not valid CSS) was parsed as part of a selector, so the `.kv { display:flex }` rule **never took effect** | only `/* */` is legal. `smoke.mjs` now guards this: brace balance, no `//` in selectors, critical rules must be present in the parsed stylesheet |
 
-第 2 条尤其阴险：**语法错误不报错，只是规则静默消失**。而且它和坑 1 叠加时，会被误判成「改过头了」——**定位必须靠解析结果，不能靠看截图猜**。
+The second is especially vicious: **a syntax error reports nothing, it just
+silently deletes a rule.** Combined with trap 1 it looks like "you overcorrected"
+— **so the diagnosis has to come from parsed output, not from squinting at a
+screenshot.**
 
-> **新增 `<p>` 时务必带上 `no-margin`。**
+> **Always add `no-margin` when introducing a new `<p>`.**
 
-### 8.10 验证方式：本机不跑浏览器，全部交给 CI
+### 8.10 How this is verified: no browser locally, CI does it all
 
-开发机是 aarch64，装 Chromium 有指令集风险。因此**所有浏览器检查都跑在 GitHub Actions 的 x86_64 runner 上**，截图与实测数据作为 artifact 回传。CI 通常 ≤2:30 完成。
+The development machine is aarch64, where installing Chromium risks instruction
+set problems. So **every browser check runs on GitHub Actions' x86_64 runners**,
+with screenshots and measurements returned as artifacts. CI usually finishes in
+under 2:30.
 
-`tools/` 下的检查，按「对这个项目是否真的必要」筛选：
+The checks under `tools/`, filtered by "is this actually necessary here":
 
-| 检查 | 职责 | 依赖 |
+| Check | Responsibility | Dependency |
 |---|---|---|
-| `smoke.mjs` | jsdom 黑盒驱动 DOM；逻辑链路 + **样式表完整性** | jsdom |
-| `check/layout.mjs` | 3 视口 × 3 页签几何实测：横向溢出 / 越界裁剪 / 内容贴边 / 触摸目标 / 安全边距 / 键值行同排 | playwright |
-| `check/shapes.mjs` | 形状 `mask-image` 是否真的指向可达 SVG；图标是否渲染成字形而非退化成文字 | playwright |
-| `check/resilience.mjs` | Beer JS/CSS 挂掉、写接口 500 时的降级行为 | playwright |
-| `check/sse.mjs` | 自建会掐断的 SSE 服务端 → 验证浏览器自动重连与 `Last-Event-ID` 续传 | playwright + node:http |
-| `check/a11y.mjs` | axe-core WCAG A/AA + 键盘可用性 + 按钮无障碍名 | axe-core |
+| `smoke.mjs` | jsdom, black-box driving the DOM; logic chain plus **stylesheet integrity** | jsdom |
+| `check/layout.mjs` | geometry at 3 viewports x 3 tabs: horizontal overflow / clipping / content flush to edges / touch targets / safe margins / key-value rows on one line | playwright |
+| `check/shapes.mjs` | do shape `mask-image` URLs really resolve to reachable SVGs; do icons render as glyphs rather than degrading into words | playwright |
+| `check/resilience.mjs` | degradation when Beer's JS/CSS fails or the write endpoint returns 500 | playwright |
+| `check/sse.mjs` | a self-hosted SSE server that hangs up, to verify automatic reconnection and `Last-Event-ID` resume | playwright + node:http |
+| `check/a11y.mjs` | axe-core WCAG A/AA, keyboard operability, accessible button names | axe-core |
 
-**明确没有引入**（并记录理由）：
+**Deliberately not adopted** (with reasons recorded):
 
-| 候选 | 为什么不要 |
+| Candidate | Why not |
 |---|---|
-| `@playwright/test` | 需要的是「把实测数据回传」，不是测试框架的 green/red；裸 playwright 够了 |
-| `pixelmatch` / `BackstopJS` / Percy / Chromatic | 视觉回归要有稳定基线，而设计还在改——**没有基线就没有差分**。截图回传给人看即可 |
-| `@lhci/cli` | 性能不是本项目瓶颈（单二进制、10 万条消息 ≈ 20MB） |
-| MSW | `page.route()` 已能拦网络，够用 |
+| `@playwright/test` | what is needed is "return the measurements", not a test runner's green/red; bare playwright suffices |
+| `pixelmatch` / `BackstopJS` / Percy / Chromatic | visual regression needs a stable baseline, and the design is still moving — **no baseline means no diffing**. Screenshots sent back for a human to look at are enough |
+| `@lhci/cli` | performance is not this project's bottleneck (one binary; 100k messages is about 20 MB) |
+| MSW | `page.route()` already intercepts the network |
 
 ---
 
-## 9. 项目结构（一文件一职责）
+## 9. Project layout (one file, one responsibility)
 
 ```
 immulog/
-├── go.mod                   module immulog（零第三方依赖）
-├── main.go                  组装与生命周期
-├── docs/DESIGN.md           本文档
-├── core/                    ← 可被外部导入的库
-│   ├── gitx/                ← 全项目唯一允许出现 os/exec 的包
-│   │   ├── exec.go          子进程边界：stdin 注入、超时、错误归一、Init
-│   │   ├── object.go        commit-tree / hash-object / log / trailer 读取
-│   │   ├── ref.go           CAS 读写 / for-each-ref / is-ancestor / count
-│   │   └── transport.go     fetch / push（复用 git 自己的 transport）
-│   └── feed/                ← 领域语义，不含 IO 细节
-│       ├── feed.go          消息编解码 + 发送 / 撤回 / 历史
-│       ├── key.go           签名自检、密钥链条、轮换公告
-│       ├── verify.go        见证锚与引用重写检测
-│       ├── snapshot.go      快照摘要与分裂视图判定
-│       ├── sync.go          多源同步：隔离区 → 校验 → 快进
-│       └── anchor.go        锚定链与外部锚定接口
-├── internal/web/            ← 传输，不含领域逻辑
-│   ├── http.go              路由与处理器（net/http）
-│   ├── sse.go               事件流广播（text/event-stream）
-│   └── guard.go             后台循环：巡检 / 同步 / 锚定
-└── web/                     ← 前端，//go:embed 整个目录
-    ├── index.html           MD3 骨架
-    ├── style.css            布局 / 形状语义 / motion / 字体
+├── go.mod                   module immulog (zero third-party dependencies)
+├── main.go                  assembly and lifecycle
+├── docs/DESIGN.md           this document
+├── core/                    <- an importable library
+│   ├── gitx/                <- the only package in the project that may use os/exec
+│   │   ├── exec.go          subprocess boundary: stdin injection, timeouts, error normalisation, Init
+│   │   ├── object.go        commit-tree / hash-object / log / trailer reads
+│   │   ├── ref.go           CAS reads and writes / for-each-ref / is-ancestor / count
+│   │   └── transport.go     fetch / push (reusing git's own transports)
+│   └── feed/                <- domain semantics, no I/O details
+│       ├── feed.go          message codec plus send / retract / history
+│       ├── key.go           signing self-test, key chain, rotation notices
+│       ├── verify.go        witness anchors and reference-rewrite detection
+│       ├── snapshot.go      snapshot digests and split-view verdicts
+│       ├── sync.go          multi-source sync: quarantine -> verify -> fast-forward
+│       ├── anchor.go        the anchor chain and the external anchoring interface
+│       ├── crypto.go        epoch keys and per-recipient wrapping
+│       ├── epoch.go         on-chain epoch records and lifecycle
+│       └── keyring.go       this machine's key custody
+├── internal/web/            <- transport, no domain logic
+│   ├── http.go              routes and handlers (net/http)
+│   ├── sse.go               event stream (text/event-stream)
+│   └── guard.go             background loops: inspection / sync / anchoring
+└── web/                     <- frontend, the whole directory is //go:embed-ed
+    ├── index.html           MD3 skeleton
+    ├── style.css            layout / shape semantics / motion / fonts
     └── app/
-        ├── main.js          组装（唯一同时知道四层的地方）
-        ├── stream.js        ← 唯一碰 EventSource
-        ├── api.js           ← 唯一碰 fetch
-        ├── store.js         ← 唯一持有状态
-        ├── render.js        ← 唯一碰 document
-        └── mock.js          演示数据源（?demo=1）
+        ├── main.js          assembly (the only file that knows all four layers)
+        ├── stream.js        <- the only place that touches EventSource
+        ├── api.js           <- the only place that touches fetch
+        ├── store.js         <- the only place that holds state
+        ├── render.js        <- the only place that touches document
+        └── mock.js          demo data source (?demo=1)
 ```
 
-**为什么 `core/` 不在 `internal/` 下**：Go 禁止导入 `internal/` 里的包。
-若要给 `core/` 一个 Apache-2.0 授权，它必须真的可被外部 `go get` ——
-否则授权只是装饰。见 `LICENSE`。
+**Why `core/` is not under `internal/`**: Go forbids importing packages under
+`internal/`. If `core/` is to carry an Apache-2.0 grant, it must genuinely be
+`go get`-able from outside — otherwise the grant is decoration. See `LICENSE`.
 
-**目录即架构约束**——同一条原则，镜像到两侧：
+**The layout is the architectural constraint** — one rule, mirrored on both
+sides:
 
-| 侧 | 唯一接触点 |
+| Side | The single contact point |
 |---|---|
-| 后端 | **`gitx` 是唯一能碰 `os/exec` 的包** |
-| 前端 | **`stream` 是唯一能碰 `EventSource` 的文件** |
+| Backend | **`gitx` is the only package that may import `os/exec`** |
+| Frontend | **`stream` is the only file that may touch `EventSource`** |
 
-这条约束买到三件事：换语言 / 换 libgit2 / 加缓存层，**全部只动一个包**；换传输协议（SSE → WebSocket）/ 换渲染方式（原生 → 框架），**全部只动一个文件**。
+That constraint buys two things: swapping languages, swapping in libgit2 or
+adding a cache layer **touches one package**; swapping the transport (SSE to
+WebSocket) or the rendering approach (vanilla to a framework) **touches one
+file**.
 
 ---
 
-## 10. 工程纪律
+## 10. Engineering discipline
 
-| # | 纪律 | 原因 |
+| # | Rule | Why |
 |---|---|---|
-| 1 | **参数一律拼 `[]string`，消息一律走 stdin** | 永远不拼 shell 字符串 → 无注入 |
-| 2 | 每次 git 调用带 `context` 超时 | 卡住的子进程不能拖垮 handler |
-| 3 | **永不用 `git commit`**，只用 `commit-tree` | 无 index、无锁、并发安全 |
-| 4 | **永不在循环里调 git** | 一次 `git log --format` 取一页 |
-| 5 | ref 更新一律带 `<old>` 做 CAS | 这就是见证锚本身 |
-| 6 | 不用 `--allow-empty` | `commit-tree` 不需要它 |
-| 7 | `UI 线程不碰 Git，也不碰密码学` | 同步做必掉帧 |
+| 1 | **arguments are always `[]string`, bodies always go through stdin** | never build a shell string, so there is no injection |
+| 2 | every git call carries a `context` timeout | a stuck subprocess must not take down a handler |
+| 3 | **never `git commit`**, only `commit-tree` | no index, no lock, concurrency-safe |
+| 4 | **never call git inside a loop** | one `git log --format` fetches a page |
+| 5 | every ref update carries `<old>` for CAS | that is the witness anchor itself |
+| 6 | no `--allow-empty` | `commit-tree` does not need it |
+| 7 | the UI thread touches neither Git nor cryptography | doing either synchronously drops frames |
 
-**唯一的性能代价**是每次子进程调用约 5ms。发送路径 = `commit-tree` + `update-ref` ≈ 10ms，完全够用。
+**The only performance cost** is about 5 ms per subprocess call. The write path
+is `commit-tree` + `update-ref`, roughly 10 ms — entirely adequate.
 
-**逃生口**：若将来进程开销成为真瓶颈，可换成 libgit2 / gix——**但不要为不存在的瓶颈付代价**。届时 `gitx` 包是唯一需要重写的地方，这正是它存在的意义。
+**The escape hatch**: if process overhead ever becomes a real bottleneck, swap in
+libgit2 or gix — **but do not pay for a bottleneck that does not exist.** At that
+point `gitx` is the only package needing a rewrite, which is exactly why it
+exists.
 
-### 性能与安全的兼容
+### Reconciling performance and security
 
-| 原则 | 做法 |
+| Principle | Approach |
 |---|---|
-| 关键路径只留 O(1) | 只做「验签名 + 验 tip 衔接」，其余全异步 |
-| 保留 commit DAG | 用 `--filter=blob:none` 而非 `--depth`（浅克隆会摧毁验证能力） |
-| 验证增量 | 从 checkpoint 往后验，成本 ∝ 新增量 |
-| ref 爆炸 | protocol v2 的 `ls-refs` + ref-prefix 过滤 |
-| 网络 | 聚合推送 / 聚合拉取，**一次往返 = 上万次验签** |
+| only O(1) on the critical path | verify the signature and the tip linkage; everything else is asynchronous |
+| keep the commit DAG | use `--filter=blob:none`, never `--depth` (a shallow clone destroys verification) |
+| verify incrementally | verify forward from a checkpoint, so cost scales with new data |
+| ref explosion | protocol v2's `ls-refs` with ref-prefix filtering |
+| network | coalesce pushes and pulls — **one round trip costs as much as ten thousand signature checks** |
 
-### 量级估算
+### Order-of-magnitude estimate
 
-一条消息 ≈ `commit(250B) + tree(60B)`（复用父 tree）≈ **300B 未压缩**
+One message is about `commit(250B) + tree(60B)` (reusing the parent tree), so
+roughly **300 B uncompressed**.
 
-- 10 万条消息 ≈ **20–30 MB**
-- 一年重度聊天 ≈ 一台手机随便存
+- 100,000 messages is about **20–30 MB**
+- A year of heavy chatting fits on a phone with room to spare
 
-**结论：存储成本可忽略。真正的敌人只有延迟和网络往返。**
+**Conclusion: storage cost is negligible. The only real enemies are latency and
+round trips.**
 
 ---
 
-## 11. 路线图
+## 11. Roadmap
 
-| 阶段 | 内容 | 状态 |
+| Phase | Content | Status |
 |---|---|---|
-| **0** | `os/exec` + `commit-tree` + `update-ref` CAS 写路径 | ✅ |
-| **1** | per-user feed 模型；trailer 元数据 | ✅ |
-| **2** | SSE（零依赖）；`net/http`；**依赖降到 0** | ✅ |
-| **3** | 本地见证锚 + 引用重写检测 + `alarm` 事件 | ✅ |
-| **3′** | commit 签名 + 密钥轮换公告 | ✅ |
-| **4** | 多源同步 + quarantine 校验 + 快照 + 锚定链 | ✅ |
-| **5** | epoch 密钥加密（crypto-shredding，实现「可遗忘」） | ⬜ |
+| **0** | `os/exec` + `commit-tree` + `update-ref` CAS write path | done |
+| **1** | per-user feed model; trailer metadata | done |
+| **2** | SSE (zero dependencies); `net/http`; **dependencies down to 0** | done |
+| **3** | local witness anchor + reference-rewrite detection + `alarm` events | done |
+| **4** | commit signing + key rotation notices | done |
+| **5** | multi-source sync + quarantine verification + snapshots + anchor chain | done |
+| **6** | epoch key encryption (crypto-shredding, i.e. forgettability) | done |
 
-**每个阶段都能独立跑起来，都能回滚。**
+**Every phase runs standalone and can be rolled back.**
 
-### 阶段 4 实现记录
-
-#### 多源同步（`feed/sync.go`）
+### Notes on multi-source sync (`feed/sync.go`)
 
 ```
-for each remote:  git fetch <url> '+refs/feeds/*:refs/quarantine/<槽位>/*'
-                                    ↑ 网络输入绝不直接写可信状态
-for each feed:    与见证锚比 → 与其它远端比 → 只允许快进地 CAS 推进
+for each remote:  git fetch <url> '+refs/feeds/*:refs/quarantine/<slot>/*'
+                                    ^ network input never writes trusted state
+for each feed:    compare with the witness -> compare with other remotes -> CAS fast-forward only
 ```
 
-三层纪律：
+Three rules:
 
-| 层 | 做法 | 挡住什么 |
+| Layer | Approach | What it stops |
 |---|---|---|
-| 隔离区 | 网络输入先落 `refs/quarantine/*` | 远端不能直接改可信状态 |
-| 见证锚 | **外来 feed 同样建见证锚**，比对后才推进 | 别人改写历史一样看得见 |
-| 只允许快进 | 非快进一律不动本地 + 留告警 | 覆盖式篡改 |
+| quarantine | network input lands in `refs/quarantine/*` first | a remote cannot touch trusted state directly |
+| witness anchor | **foreign feeds get a witness anchor too**, and are advanced only after comparison | someone else rewriting their history is just as visible |
+| fast-forward only | anything else leaves local state untouched, with an alarm | overwriting tampering |
 
-远端之间互相矛盾（对同一条 feed 给出无共同后代的两个链尾）判为 **分裂视图**。
+Remotes that contradict each other (giving tips for one feed with no common
+descendant) are reported as a **split view**.
 
-节点是 git 的**客户端**：ssh / https / file / git 全部由 `git fetch`/`push` 白送，
-不需要自己实现 git 协议服务端。
+A node is a git **client**: ssh / https / file / git all come free with
+`git fetch` / `push`, and there is no git protocol server to implement.
 
-#### 快照（`feed/snapshot.go`）
+### Notes on snapshots (`feed/snapshot.go`)
 
 ```go
-digest = git hash-object(排序后的 "refs/feeds/x <oid>" 文本)
+digest = git hash-object(the sorted text of "refs/feeds/x <oid>" lines)
 ```
 
-**内容寻址本身就是 Merkle 叶子**，所以不必自己造 Merkle 树。
+**Content addressing is already a Merkle leaf**, so there is no Merkle tree to
+build.
 
-**为什么不做 RFC 6962 的 inclusion / consistency proof**：那一套是给**轻客户端**
-用的 —— 它们不持有完整 ref 列表，需要 O(log n) 的证明。我们的客户端本来就持有
-全量 ref，逐条比对既更简单也**更强**。真到要支持轻客户端那天再补。
+**Why not RFC 6962 inclusion / consistency proofs**: that machinery exists for
+**light clients** — they do not hold the full ref list and need O(log n) proofs.
+Our clients hold every ref, so comparing them one by one is both simpler and
+**stronger**. Add proofs the day light clients appear.
 
-判定分裂的标准刻意严格：只有两条链尾**互不构成祖先关系**才算矛盾；
-一方落后只是"还没同步到"。
+The bar for divergence is deliberately strict: only two tips that are **not
+ancestors of one another** count as a contradiction. One side being behind is
+just "not synced yet".
 
-#### 锚定链（`feed/anchor.go`）
+### Notes on the anchor chain (`feed/anchor.go`)
 
-每个锚定提交的 parent 是上一个 —— **链由 git 的哈希链保证**：
-想改写历史里的某个锚定，必须连带改写它之后的全部锚定，而客户端手里可能还留着旧的。
+Each anchor commit's parent is the previous anchor — **the chain is guarded by
+git's own hash chain**: rewriting an anchor in the middle requires rewriting
+every anchor after it, and clients may still hold the old ones.
 
 ```go
 type Publisher interface {
@@ -897,73 +1022,81 @@ type Publisher interface {
 }
 ```
 
-这是「外部锚定」的**全部**接口。真正的**外部性**来自这一跳：只要回执落在别人的
-地盘上，事后谁都无法统一口径。接 OpenTimestamps 网关、RFC3161 网关、自建公证
-服务都行 —— 换服务只是换 URL。
+That is the **entire** external-anchoring interface. The real **externality**
+comes from that one hop: once a receipt lives on someone else's turf, nobody can
+harmonise the story afterwards. An OpenTimestamps gateway, an RFC3161 gateway or
+your own notary all work — swapping services means swapping a URL.
 
-未配置时锚定只落在本机，**服务与界面都会明说"未外部确认"**，不假装安全。
+When unconfigured, anchoring stays local and **both the service and the
+interface say "not externally confirmed"**. It does not pretend to be safe.
 
-#### 撤回的授权（阶段 4 补上的一条规则）
+### Authorisation of retraction (a rule added with sync)
 
-撤回目标来自请求体，必须：① 是合法对象名；② 属于**本机 feed**。
-撤回事件在线上还带上 `feed`，客户端只在**同一条 feed 内**应用它。
+A retraction target comes from a request body and must (1) be a valid object name
+and (2) belong to the **local feed**. On the wire, retraction events also carry
+`feed`, and clients apply them only **within the same feed**.
 
-> **撤回是作者的权利，不是谁都能对别人做的事。**
+> **Retraction is the author's right, not something anyone can do to anyone.**
 
-#### 阶段 4 抓到的两个真实漏洞
+### Two real vulnerabilities found while building sync
 
-1. **trailer 注入**：`reason` / 外部回执里有一个换行，就能凭空造出一行
-   `ImmuLog-Seq: 999`；而 git 的 trailer 解析取**最后一次**出现 —— **伪造的会赢**。
-   修法是 `sanitizeValue`：trailer 值一律压成单行（正文仍保留换行）。
-2. **越权撤回**：原本任何 OID 都能作为撤回目标。现在要求目标必须是本机链尾的祖先，
-   且 `IsAncestor` 的对象缺失路径要**失败即拒绝**（否则泄漏成 500）。
+1. **Trailer injection**: a single newline inside `reason` or an external receipt
+   fabricates a line like `ImmuLog-Seq: 999`; and git's trailer parser takes the
+   **last** occurrence — **so the forgery wins**. Fixed by `sanitizeValue`:
+   trailer values are always collapsed to one line (bodies keep their newlines).
+2. **Unauthorised retraction**: originally any OID could be a retraction target.
+   Now the target must be an ancestor of the local tip, and the missing-object
+   path in `IsAncestor` must **fail closed** (otherwise it leaked as a 500).
 
 ---
 
-## 12. 反模式清单
+## 12. Anti-pattern list
 
-| ❌ | 为什么 |
+| ❌ | Why |
 |---|---|
-| 用 `--depth` 浅克隆换性能 | 没有历史 = 无法验证历史。用 `blob:none` |
-| 每条消息一次 fetch/push | 用最贵的操作（往返）省最便宜的东西（字节） |
-| 同步等全链验证再上屏 | 唯一一个「优化安全性会导致产品死亡」的地方 |
-| 用 `git commit` / `Worktree.Pull()` | 引入锁，且 `Pull` 会 **merge 接受分叉** |
-| 把 `author` 字段当身份 | 纯文本，零成本冒名 |
-| 用文件系统事件当正确性来源 | `pack-refs` 后监听目录会**静默变空** |
-| 用 `+` refspec | 明确授权强制覆盖本地引用 |
-| 允许 `git replace` / grafts | 本地改写历史的合法后门，会污染验证链 |
-| 依赖服务器的 reflog / 服务器自签快照 | split view 下毫无意义，他能签两份 |
-| 撤回后连自己也看不到 | 用户会直接换软件 |
+| shallow-cloning with `--depth` for speed | no history means no ability to verify history. Use `blob:none` |
+| one fetch/push per message | spending the most expensive operation (a round trip) to save the cheapest thing (bytes) |
+| waiting for full verification before rendering | the one place where optimising for security kills the product |
+| `git commit` / `Worktree.Pull()` | it introduces a lock, and `Pull` **merges, i.e. accepts divergence** |
+| treating the `author` field as identity | plain text, impersonation at zero cost |
+| trusting filesystem events for correctness | after `pack-refs` the watched directory goes **silently empty** |
+| a `+` refspec | explicitly authorising a forced overwrite of local refs |
+| allowing `git replace` / grafts | a legitimate backdoor for rewriting history locally, and it poisons the verification chain |
+| trusting a server's reflog or a server-signed snapshot | meaningless under a split view: it can sign two of them |
+| retracting so hard that even you cannot see it | users switch products |
 
 ---
 
-## 13. 术语表
+## 13. Glossary
 
-| 术语 | 含义 |
+| Term | Meaning |
 |---|---|
-| **feed** | 每个用户一条 append-only 的 commit 链，`refs/feeds/<pubkey>` |
-| **见证锚 witness anchor** | 客户端本地记录的「我上次见过的 ref 值」，不可被服务器覆盖 |
-| **引用重写** | ref 从 A 变到 B，且 B 不是 A 的后代（force push / 回滚） |
-| **分裂视图 split view** | 服务器对不同客户端展示不同历史 |
-| **重写公告** | 用户合法重写历史时必须留下的签名追加事件 |
-| **回执链** | 我的 commit 引用你的 OID，形成互相咬合的 DAG |
-| **tombstone** | 撤回事件；一条指向被撤回 OID 的新 commit |
-| **可验证 verifiable** | 随时**可以**被验证——本项目的目标 |
-| **已验证 verified** | 任何时候都**已经**被验证——昂贵，且不必要 |
+| **feed** | one append-only commit chain per user, `refs/feeds/<pubkey>` |
+| **witness anchor** | the client's local record of "the last ref value I saw"; a server cannot overwrite it |
+| **reference rewrite** | a ref moves from A to B where B is not a descendant of A (force push / rollback) |
+| **split view** | a server shows different clients different histories |
+| **rewrite notice** | the signed appended event a user must leave when legitimately rewriting history |
+| **receipt chain** | my commit referencing your OID, forming a DAG that interlocks |
+| **tombstone** | a retraction event: a new commit pointing at the retracted OID |
+| **verifiable** | *can be* verified at any time — the goal of this project |
+| **verified** | *has been* verified at all times — expensive, and unnecessary |
 
 ---
 
-## 14. 收束
+## 14. Closing
 
-> **内容层零信任**（哈希自证）
-> **发现层多源共识**（本地见证 + gossip + 外部锚定）
-> **重写必须留痕**（签名公告）
-> **回执互相咬死**（DAG 互引）
-> **撤回即追加**（tombstone，永不删除）
+> **Zero trust at the content layer** (hashes prove themselves)
+> **Multi-source consensus at the discovery layer** (local witness + gossip + external anchoring)
+> **Rewrites must leave a trace** (signed notices)
+> **Receipts interlock** (the DAG references itself)
+> **Retraction is an append** (a tombstone; never a delete)
 
-做到这五条，管理员就退化成**一个可被任意替换的搬运工**：他能拒绝服务、能拖慢你，但**做不到静默**。
+With those five in place, an administrator degrades into **an interchangeable
+courier**: they can deny service and slow you down, but they **cannot be quiet**.
 
-他每一次动手，都会在聊天流里长出一条**你自己生成、他删不掉**的系统消息。
+Every time they act, a system message **you generated and they cannot delete**
+grows in the chat stream.
 
-> 这就是「隐身不可能」——不是因为他不能改，
-> 而是因为**改了这个动作必然留下签名都盖不住的痕迹**。
+> That is why going invisible is impossible — not because they cannot change
+> things, but because **changing them necessarily leaves a trace that no
+> signature can cover up.**

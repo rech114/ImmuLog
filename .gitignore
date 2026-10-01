@@ -3,10 +3,10 @@ immulog
 *.log
 .DS_Store
 
-# 开发/CI 工具依赖与产物，均不属于运行时
+# Dev/CI tooling dependencies and output; none of it is part of the runtime
 tools/node_modules/
 tools/package-lock.json
 artifacts/
 
-# 临时排查脚本不进仓库
+# throwaway debugging scripts do not belong in the repo
 tools/diag*.mjs
