@@ -327,6 +327,12 @@ it, an admin must **rewrite both alice's and bob's feeds at once** — **two
 private keys they do not have**. The only thing they can do is "not serve it",
 and then you immediately see a hole nobody can patch.
 
+**Status: designed here, not implemented.** Nothing in `core/feed` writes a
+reference to a foreign OID; the only cross-object reference is `ImmuLog-Retracts`,
+and retraction is restricted to the author's own feed. Until L3 lands, the
+paragraph above is an argument about what the design *would* give you, not a
+description of the running system.
+
 **L4 reuses existing wheels**: the snapshot is a Merkle root, the consistency
 proof follows Certificate Transparency's STH / consistency-proof design, and
 clients exchange snapshot hashes to detect a split view. Periodically hand the
@@ -658,6 +664,13 @@ The distinction matters because it demotes authentication to "anti-harassment"
 rather than "security", which means the simplest implementation (a token in a
 cookie) is sufficient — no OAuth, no JWT.
 
+**Status: designed here, not implemented.** The route table in
+`internal/web/http.go` carries no middleware, and no cookie, token or
+`Authorization` header appears anywhere in the tree. Until §7.11's **T2** lands,
+a node reachable on a network port accepts writes from anyone who can reach it,
+**in the identity of its own git config** — and reads the whole history besides.
+Deploy accordingly (§7.11 opens with what that leaves unprotected).
+
 ### 7.10 Why not WebSocket
 
 | | SSE | WebSocket |
@@ -675,6 +688,172 @@ Incidentally: the prototype's WebSocket `readPump` broadcast browser messages to
 everyone **without persisting them** — it needed one-way push all along. Turning
 dead code into a design decision removes the whole `Hub`/`Client`/channel state
 machine.
+
+---
+
+### 7.11 Transport security: what TLS and a token buy, and what they do not
+
+The last hop is the only hop where this project's guarantees do not reach.
+
+| Layer | Protects | Status |
+|---|---|---|
+| **Content** — signed commits, content addressing | the repository | implemented; the **node** checks it |
+| **Transport** — TLS | the wire to one node | not implemented (no TLS config, no `ListenAndServeTLS`) |
+| **Service auth** — the §7.9 startup token | who may talk to the service | not implemented (§7.9 describes it; the routes have no middleware) |
+| **Client-side** | what the user actually sees | **nothing** — see below |
+
+#### The gap that matters
+
+The browser verifies nothing. `sig` arrives as a server-generated label
+(git's `%G?` rendered as "signature valid"), the OID is a string in a JSON
+frame, and `Last-Event-ID` is whatever the server said last. A party on the path
+— a reverse proxy, a hostile host, or a MITM holding a valid certificate for a
+name the user typed — can serve a rewritten history **and** a modified frontend.
+A signed commit cannot stop it, because **the screen is not signed**.
+
+> We spent §3–§6 making history unforgeable, and then hand the user a rendering
+> of it from an unauthenticated, unencrypted, single source.
+
+#### The tiers
+
+| Tier | Stops | Cost | Where it belongs |
+|---|---|---|---|
+| **T1 TLS** | passive reading; on-path injection; MITM against a typed hostname | a proxy config | a reverse proxy, **not the binary** |
+| **T2 token** | random writers and readers on a reachable port | one middleware, ~40 lines | `internal/web` |
+| **T3 response headers** | script injection into the page, MIME confusion | a few lines | `internal/web` |
+| **T4 a second backend** | **the node itself lying** | §7.12 | the client |
+
+T1–T3 are ordinary and cheap. Only **T4** addresses the adversary this project
+exists for (§2's *Lie*), and it is not a transport mechanism at all.
+
+#### Why a cookie and not an `Authorization` header
+
+`EventSource` cannot set request headers. The SSE stream is the frontend's main
+channel, so the credential must ride in something the browser attaches by
+itself. That leaves a cookie — **that is why §7.9 chose one, and it is a
+constraint, not a preference.**
+
+#### What the token is not
+
+Per §7.9 it is anti-harassment, not security: whoever holds it can only send
+messages **they signed**. It does not make a node trustworthy, and it does not
+survive a malicious node — that node already holds the token, and it is the one
+serving the page.
+
+#### Deliberately not adopted
+
+| Candidate | Why not |
+|---|---|
+| verifying SSH signatures **in the browser** | hand-rolled crypto in a second language, drifting from git's own verifier. §1 rules it out, and a JS verifier that disagrees with `git log --show-signature` is worse than none |
+| TLS terminated **inside the binary** | dragging in cert reloading and an ACME client, or hard-coding key paths and giving up auth, rate limits and access logs. `net/http` makes the proxy cheap — that is where it belongs |
+| `Authorization` on `EventSource` | not possible; see above |
+| SRI or a "signed frontend" | a subresource hash cannot protect the document carrying it, and a self-signed page proves nothing to a reader who has not pinned a key out of band |
+| pinning the app bundle's hash in the UI | worth doing once two users can compare hashes out of band; **noted, not planned** |
+
+#### What cannot be solved — stated plainly
+
+A user who connects to somebody else's node **and has no second source is
+trusting that node completely.** §6.5 already says this about encryption
+("using someone else's hosted node means they can read it"); this is the same
+sentence, one layer down. The only answer is §7.12, and it is a *deployment*
+answer as much as a feature: run the binary yourself, or read from more than one.
+
+---
+
+### 7.12 Multiple backends: the client joins the comparison
+
+The frontend talks to one origin today. That origin is a single point of both
+availability and honesty, and §7.11 shows a browser cannot check the second one.
+So the client gets the answer the nodes already have: **compare several
+independent views, and let the disagreement be the signal.**
+
+This is gossip's argument (§6.3, L4) moved to the last hop.
+
+| | Nodes (gossip, §6.3 L4) | Client (backends) |
+|---|---|---|
+| Unit compared | the `{feed -> tip}` digest | the same digest, same endpoint |
+| Transport | HTTP | HTTP |
+| Verdict | diverged / missing / unverifiable | a **strict subset** — see below |
+| Value | breadth of replicas | breadth of *sources the user can see* |
+
+#### The list of backends belongs to the browser
+
+| Option | Verdict |
+|---|---|
+| the node serves the peer list | **no** — a node would pick its own alibi; a compromised one would list only itself |
+| the browser keeps the list | **yes** — the user owns the set being compared, and it survives a hostile node |
+| node-provided **defaults**, browser-editable | the compromise taken: convenient first run, no loss of authority |
+
+> **Whoever picks the witnesses is the trust anchor.** If the node picks them,
+> the comparison proves nothing.
+
+#### Per-backend cache, and what a cache may not claim
+
+Each backend gets its own slot: the last digest, the last tip per feed, the last
+`ImmuLog-Seq` seen per feed, and the decoded timeline. Switching is then
+instant, survives being offline, and never mixes two rooms.
+
+A cache is stale by definition, and **a stale view presented as current is
+precisely the lie this project exists to prevent.** Hence three rules:
+
+| Rule | Why |
+|---|---|
+| cached items render **marked**, becoming `verified` only when the live stream confirms the OID | the same reason optimistic delivery uses a `pending` shape (§8.5) |
+| the cache **never overwrites** live state, only precedes it | it is a hint; the stream is the record |
+| switching re-renders from cache, then reconciles | the alternative is a blank screen on every switch |
+
+#### What the client can and cannot verdict
+
+This is the boundary that must be written down, because it is easy to overclaim:
+
+| Check | Client-side? | Why |
+|---|---|---|
+| this node's digest ≠ the digest I cached | **yes** | it is one string |
+| this node's `Seq` for a feed went **backwards** | **yes** | §6.3's **L2** — a monotonic sequence exists for exactly this |
+| two backends disagree | **yes** | digests again |
+| is that a rewrite, or am I just behind? | **no** | ancestry needs objects: `merge-base --is-ancestor` needs a repository |
+| is this commit's signature valid? | **no** | §7.11, deliberately |
+
+So the client raises a **weaker, honestly-worded** notice:
+
+> backend `node-b` no longer agrees about feed `3f2a1b` — you last saw seq 42,
+> this node says 30. Either you are looking at a different history or something
+> was rolled back. **This client cannot tell which; a node can** (Integrity tab).
+
+That last clause is the point: it routes the user to the party that *can* answer
+instead of pretending the browser just did. And per §8.5 **an alarm is a notice
+sealed into the timeline, never a toast** — it does not auto-dismiss.
+
+#### One file, one responsibility
+
+`localStorage` is a resource, and §8.6's rule is one owner per resource:
+
+```
+web/app/backends.js    <- the only place that touches localStorage
+```
+
+It owns the list, the active selection and the per-backend slots. It holds no
+live state — that stays in `store.js` — and it renders nothing. The data flow
+gains one edge and keeps its direction:
+
+```
+backends -> stream -> store -> render
+```
+
+`stream.js` and `api.js` each gain a `base` argument and keep their single
+ownership (`EventSource`, `fetch`). **Switching is therefore
+`disconnect() -> swap active -> connect()`**, and no layer learns about any
+other — which is the dividend of the "only" discipline (§8.6), the same way
+deleting `?demo=1` is.
+
+#### What this cannot do
+
+| Limit | |
+|---|---|
+| It needs **≥2 independently operated** backends | one backend is a single source whatever the UI says. The **n≥3** argument from §6.3 applies to *attribution*: two views disagreeing say that something is wrong, never **who** |
+| It cannot judge a disagreement | see the table above |
+| It compares **views, not content** | two colluding nodes return the same lie. Breadth only helps if the sources are independently operated — a social fact, not a technical one |
+| A malicious backend still serves the **frontend** | the page came from one of them. Running the binary yourself is the only complete answer |
 
 ---
 
@@ -770,6 +949,7 @@ web/
     ├── main.js             assembly and entry (the only one that knows all four layers)
     ├── stream.js           <- the only place that touches EventSource
     ├── api.js              <- the only place that touches fetch
+    ├── backends.js         <- the only place that touches localStorage (§7.12, planned)
     ├── store.js            <- the only place that holds state
     ├── render.js           <- the only place that touches document
     └── mock.js             demo data source (?demo=1), same contract as the real SSE
@@ -782,13 +962,16 @@ web/
 The property to verify (and it should always hold):
 
 ```
-EventSource appears only in stream.js
-fetch       appears only in api.js
-document.   appears only in render.js
+EventSource  appears only in stream.js
+fetch        appears only in api.js
+localStorage appears only in backends.js   <- planned, §7.12
+document.    appears only in render.js
 ```
 
 **Data flow is strictly one-way:** `stream -> store -> render`, and on the write
-side `api -> store -> render`.
+side `api -> store -> render`. §7.12 adds exactly one node at the front —
+`backends -> stream -> ...` — and **no edge in the other direction**: the store
+never reaches back for a backend, it is told which one is active.
 
 **`mock.js` exists on purpose**: it lets the interface run before the backend is
 finished, and because its contract matches the real SSE exactly, connecting is
@@ -931,6 +1114,7 @@ immulog/
         ├── main.js          assembly (the only file that knows all four layers)
         ├── stream.js        <- the only place that touches EventSource
         ├── api.js           <- the only place that touches fetch
+        ├── backends.js      <- the only place that touches localStorage (§7.12, planned)
         ├── store.js         <- the only place that holds state
         ├── render.js        <- the only place that touches document
         └── mock.js          demo data source (?demo=1)
@@ -1010,8 +1194,14 @@ round trips.**
 | **5** | multi-source sync + quarantine verification + snapshots + anchor chain | done |
 | **6** | epoch key encryption (crypto-shredding, i.e. forgettability) | done |
 | **7** | snapshot gossip: comparing whole views, not feed by feed | done |
+| **8** | transport security: the §7.9 startup token and response headers (T2 + T3 in §7.11) | planned |
+| **9** | multiple backends: client-side view comparison plus a per-backend cache | planned (§7.12) |
 
 **Every phase runs standalone and can be rolled back.**
+
+Phases 0–7 are in the tree. **8 and 9 are a plan, not a description** — they are
+written out in §7.11 and §7.12 so the reasoning is reviewable before any code
+exists, which is the same order §3–§6 were written in.
 
 ### Notes on multi-source sync (`feed/sync.go`)
 
@@ -1109,6 +1299,11 @@ and (2) belong to the **local feed**. On the wire, retraction events also carry
 | waiting for full verification before rendering | the one place where optimising for security kills the product |
 | `git commit` / `Worktree.Pull()` | it introduces a lock, and `Pull` **merges, i.e. accepts divergence** |
 | treating the `author` field as identity | plain text, impersonation at zero cost |
+| verifying commit signatures **in the browser** | hand-rolled crypto in a second language, and a second verifier that can disagree with `git log --show-signature` is worse than having none (§7.11) |
+| letting the **node** choose which backends the client compares against | whoever picks the witnesses is the trust anchor; a compromised node would list only itself (§7.12) |
+| rendering a **cached** timeline as if it were current | a stale view presented as current is precisely the lie this project exists to prevent (§7.12) |
+| merging several backends into one averaged view | disagreement **is** the signal — averaging it away destroys the only thing the feature produces (§7.12) |
+| claiming the client can detect a *rewrite* | it cannot: ancestry needs objects. It can see disagreement and a backwards `Seq`, and must say only that (§7.12) |
 | trusting filesystem events for correctness | after `pack-refs` the watched directory goes **silently empty** |
 | a `+` refspec | explicitly authorising a forced overwrite of local refs |
 | allowing `git replace` / grafts | a legitimate backdoor for rewriting history locally, and it poisons the verification chain |
@@ -1125,6 +1320,7 @@ and (2) belong to the **local feed**. On the wire, retraction events also carry
 | **witness anchor** | the client's local record of "the last ref value I saw"; a server cannot overwrite it |
 | **reference rewrite** | a ref moves from A to B where B is not a descendant of A (force push / rollback) |
 | **split view** | a server shows different clients different histories |
+| **backend** | one node the browser reads from; its own URL, credential and cache slot (§7.12) |
 | **rewrite notice** | the signed appended event a user must leave when legitimately rewriting history |
 | **receipt chain** | my commit referencing your OID, forming a DAG that interlocks |
 | **tombstone** | a retraction event: a new commit pointing at the retracted OID |
@@ -1140,8 +1336,9 @@ and (2) belong to the **local feed**. On the wire, retraction events also carry
 > **Rewrites must leave a trace** (signed notices)
 > **Receipts interlock** (the DAG references itself)
 > **Retraction is an append** (a tombstone; never a delete)
+> **The viewer is not exempt** (a signed history proves nothing if the screen is served by the party that rewrote it — §7.11)
 
-With those five in place, an administrator degrades into **an interchangeable
+With those six in place, an administrator degrades into **an interchangeable
 courier**: they can deny service and slow you down, but they **cannot be quiet**.
 
 Every time they act, a system message **you generated and they cannot delete**
