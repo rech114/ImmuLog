@@ -18,7 +18,7 @@ import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { VIEWPORTS, session, collector, shot, ROOT } from '../lib/harness.mjs';
+import { VIEWPORTS, session, collector, shot, ROOT, TEST_TOKEN, authHeaders, signIn } from '../lib/harness.mjs';
 
 const GIT_ENV = {
   ...process.env,
@@ -50,7 +50,7 @@ async function waitHealthy(base, ms = 30000) {
   let lastErr;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(base + '/api/health');
+      const r = await fetch(base + '/api/health', { headers: authHeaders() });
       if (r.ok) return await r.json();
     } catch (e) {
       lastErr = e;
@@ -87,7 +87,9 @@ export default async function e2e(browser, _base, c) {
 
     // ── 3) Start the service ─────────────────────────────────────
     proc = spawn(bin, [], {
-      env: { ...GIT_ENV, IMMULOG_REPO: repo, PORT: String(port) },
+      // §7.11 T2: the surface is closed unless a token is supplied. The token
+      // is fixed so the check can present it.
+      env: { ...GIT_ENV, IMMULOG_REPO: repo, PORT: String(port), IMMULOG_TOKEN: TEST_TOKEN },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let serverLog = '';
@@ -108,6 +110,7 @@ export default async function e2e(browser, _base, c) {
     page.on('console', (m) => m.type() === 'error' && consoleErrors.push(m.text().slice(0, 200)));
     page.on('pageerror', (e) => consoleErrors.push(String(e).slice(0, 200)));
 
+    await signIn(ctx, base); // §7.11 T2: the browser needs the cookie
     await page.goto(base + '/', { waitUntil: 'load' });
     await page.waitForSelector('#input', { timeout: 15000 });
     await page.waitForTimeout(1200);
@@ -219,8 +222,9 @@ export default async function e2e(browser, _base, c) {
     const real = consoleErrors.filter((e) => !/favicon|404/i.test(e));
     c.ok(real.length === 0, 'no uncaught JS errors throughout', { errors: real });
 
-    // The service is still alive
-    const h2 = await (await fetch(base + '/api/health')).json();
+    // The service is still alive. An anonymous probe would answer {ok} and
+    // nothing else, which is asserted in internal/web/auth_test.go.
+    const h2 = await (await fetch(base + '/api/health', { headers: authHeaders() })).json();
     c.ok(h2.ok === true, 'the service still works after detecting tampering (alarms, does not strike)');
 
     await ctx.close();

@@ -1,0 +1,62 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>ImmuLog — unlock</title>
+
+  <!-- Same embedded assets as the app, so the entry point looks like the thing
+       it opens. Vendored, not fetched: see tools/vendor.sh and DESIGN.md §8.8. -->
+  <link href="vendor/beer/beer.min.css" rel="stylesheet">
+  <link href="vendor/fonts/fonts.css" rel="stylesheet">
+  <link href="style.css" rel="stylesheet">
+</head>
+
+<body class="dark">
+
+  <main>
+    <div class="wrap">
+
+      <section class="view active">
+        <article class="border round medium-padding">
+          <h5><i>key</i> Node token</h5>
+
+          <!-- No script on this page on purpose: it is the one screen that must
+               work before anything is trusted, so it does nothing at all. -->
+          <p class="small-text muted no-margin">
+            This node is not open to the network. The token was printed in its
+            startup log, or set in <code>IMMULOG_TOKEN</code>.
+          </p>
+
+          <div class="divider"></div>
+
+          <form method="get" action="/">
+            <div class="field border round">
+              <input id="token" name="token" type="password" required
+                     autocomplete="off" spellcheck="false"
+                     aria-label="Node token" placeholder="paste the token">
+            </div>
+            <nav class="right-align">
+              <button class="round" type="submit">Unlock</button>
+            </nav>
+          </form>
+
+          <div class="divider"></div>
+
+          <p class="small-text muted no-margin">
+            It is stored in an HttpOnly cookie and never leaves this browser. It
+            is a service credential, not an identity: the authenticity of a
+            message comes from its signature, never from this.
+          </p>
+        </article>
+      </section>
+
+    </div>
+  </main>
+
+</body>
+
+</html>

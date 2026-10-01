@@ -664,12 +664,11 @@ The distinction matters because it demotes authentication to "anti-harassment"
 rather than "security", which means the simplest implementation (a token in a
 cookie) is sufficient — no OAuth, no JWT.
 
-**Status: designed here, not implemented.** The route table in
-`internal/web/http.go` carries no middleware, and no cookie, token or
-`Authorization` header appears anywhere in the tree. Until §7.11's **T2** lands,
-a node reachable on a network port accepts writes from anyone who can reach it,
-**in the identity of its own git config** — and reads the whole history besides.
-Deploy accordingly (§7.11 opens with what that leaves unprotected).
+**Status: implemented** — `internal/web/auth.go`. The token gates the whole
+surface; an empty token means open mode, and `main.go` reaches that state only
+through an explicit `IMMULOG_OPEN=1` that it warns about at startup, in the same
+family as every other degraded property it reports. §7.11 records what that
+closed.
 
 ### 7.10 Why not WebSocket
 
@@ -699,7 +698,7 @@ The last hop is the only hop where this project's guarantees do not reach.
 |---|---|---|
 | **Content** — signed commits, content addressing | the repository | implemented; the **node** checks it |
 | **Transport** — TLS | the wire to one node | not implemented (no TLS config, no `ListenAndServeTLS`) |
-| **Service auth** — the §7.9 startup token | who may talk to the service | not implemented (§7.9 describes it; the routes have no middleware) |
+| **Service auth** — the §7.9 startup token | who may talk to the service | **implemented** (`internal/web/auth.go`) |
 | **Client-side** | what the user actually sees | **nothing** — see below |
 
 #### The gap that matters
@@ -716,15 +715,62 @@ A signed commit cannot stop it, because **the screen is not signed**.
 
 #### The tiers
 
-| Tier | Stops | Cost | Where it belongs |
-|---|---|---|---|
-| **T1 TLS** | passive reading; on-path injection; MITM against a typed hostname | a proxy config | a reverse proxy, **not the binary** |
-| **T2 token** | random writers and readers on a reachable port | one middleware, ~40 lines | `internal/web` |
-| **T3 response headers** | script injection into the page, MIME confusion | a few lines | `internal/web` |
-| **T4 a second backend** | **the node itself lying** | §7.12 | the client |
+| Tier | Stops | Cost | Where it belongs | Status |
+|---|---|---|---|---|
+| **T1 TLS** | passive reading; on-path injection; MITM against a typed hostname | a proxy config | a reverse proxy, **not the binary** | deployment |
+| **T2 token** | random writers and readers on a reachable port | one middleware | `internal/web/auth.go` | **done** |
+| **T3 response headers** | script injection into the page, MIME confusion | a few lines | `internal/web/headers.go` | **done** |
+| **T4 a second backend** | **the node itself lying** | §7.12 | the client | planned |
 
-T1–T3 are ordinary and cheap. Only **T4** addresses the adversary this project
-exists for (§2's *Lie*), and it is not a transport mechanism at all.
+T1–T3 are ordinary and cheap, and T2/T3 are now in the tree. Only **T4**
+addresses the adversary this project exists for (§2's *Lie*), and it is not a
+transport mechanism at all.
+
+#### What T2 closed
+
+With no middleware, anyone who could reach the port could do all of this:
+
+| Endpoint | What it allowed |
+|---|---|
+| `POST /api/commit` | post into the operator's feed **as the operator**, because identity comes from git config and never from a request |
+| `POST /api/commit` (`kind: retract`) | **tombstone the operator's own messages** — `Retract` only checks that the target is in the local feed, never who asked |
+| `POST /api/shred` | **discard an epoch key**, and that is not reversible: `SaveEpochKey` refuses to write it back and `IsShredded` blocks unwrapping it from the chain again. A stranger could make the operator's own history **permanently unreadable** |
+| `POST /api/rotate` | announce a rotation to a key the operator does not hold, **breaking the key chain** — every later commit then raises a false "signing key swapped" alarm |
+| `GET /api/stream` | replay every message |
+| `GET /api/snapshot` | every feed and tip, plus `remotes` — which leaks the **relay paths and hosts** |
+| `GET /api/health` | the feed id, the head OID and the peer list |
+
+The shred and rotate rows are the ones worth pausing on. Neither is
+"harassment": both are destructive, and neither is something the operator can
+undo afterwards.
+
+`/api/health` still answers without the token, because a liveness probe needs
+to — but only `{"ok":true}`. The full payload names the feed, the head and every
+peer, and it is only returned to a caller that presented the secret.
+
+#### What T3 closed
+
+| Header | Closes |
+|---|---|
+| `script-src 'self'` | an injected `<script>` reaching the DOM — the most direct route to the message bodies, and then to the HttpOnly cookie's secret |
+| `nosniff` | an asset served with a type the browser disagrees about, sniffed into something executable |
+| `Referrer-Policy: no-referrer` | the `?token=` URL escaping through a `Referer` on the way to the redirect |
+| `base-uri 'none'` | a `<base>` injection re-pointing relative URLs — and **every URL in this app is relative** |
+| `frame-ancestors` / `X-Frame-Options` | clickjacking the timeline, or the unlock form |
+| `Cross-Origin-*` | a foreign page reading these responses, or opening them as a window |
+
+#### What T2 and T3 do not close
+
+- A malicious node: it holds the token and it serves the page (§7.12, T4).
+- The wire: anyone on the path still reads everything (**T1**).
+- Identity: a stolen token lets someone send messages **they signed**, and
+  nothing else — that is the point of §7.9, not a shortfall of it.
+- A token rotated in `IMMULOG_TOKEN` invalidates every browser's cookie, and the
+  page in front of the user does not notice until it is reloaded. A reload is
+  the fix, and it is left as one: a client-side auth state machine would be more
+  moving parts than the boundary deserves.
+- `connect-src 'self'` is written for one origin. §7.12 widens it, deliberately
+  and visibly, when the second backend lands.
 
 #### Why a cookie and not an `Authorization` header
 
@@ -732,6 +778,23 @@ exists for (§2's *Lie*), and it is not a transport mechanism at all.
 channel, so the credential must ride in something the browser attaches by
 itself. That leaves a cookie — **that is why §7.9 chose one, and it is a
 constraint, not a preference.**
+
+#### A gossip peer is a client too
+
+`/api/snapshot` is gated like everything else, so a peer node needs the token of
+the node it is reading. The peer list has nowhere else to put a credential, so it
+goes in the URL — and `core/feed` moves it into an `Authorization` header before
+the request leaves, because a shared secret in a request line ends up in every
+access log on the way (§7.12 uses the same credential for the same reason):
+
+```sh
+IMMULOG_PEERS="carol=http://10.0.0.9:8083/?token=<carol's token>"
+```
+
+The reverse direction matters just as much: that URL is what `/api/snapshot`
+reports to the browser, so the credential is replaced before any report leaves
+the process. The peers panel shows `?token=redacted` — enough to tell the reader
+that a secret is being held back, without handing it over.
 
 #### What the token is not
 
@@ -1105,10 +1168,13 @@ immulog/
 │       └── keyring.go       this machine's key custody
 ├── internal/web/            <- transport, no domain logic
 │   ├── http.go              routes and handlers (net/http)
+│   ├── auth.go              the node token: cookie, challenge and unlock page (T2)
+│   ├── headers.go           the response headers that protect the reader (T3)
 │   ├── sse.go               event stream (text/event-stream)
 │   └── guard.go             background loops: inspection / sync / anchoring
 └── web/                     <- frontend, the whole directory is //go:embed-ed
     ├── index.html           MD3 skeleton
+    ├── unlock.html          the token entry page, served only while unauthenticated
     ├── style.css            layout / shape semantics / motion / fonts
     └── app/
         ├── main.js          assembly (the only file that knows all four layers)
@@ -1194,14 +1260,17 @@ round trips.**
 | **5** | multi-source sync + quarantine verification + snapshots + anchor chain | done |
 | **6** | epoch key encryption (crypto-shredding, i.e. forgettability) | done |
 | **7** | snapshot gossip: comparing whole views, not feed by feed | done |
-| **8** | transport security: the §7.9 startup token and response headers (T2 + T3 in §7.11) | planned |
+| **8a** | transport security, client side of the gate: the §7.9 startup token and the response headers (T2 + T3) | done |
+| **8b** | transport security, wire side: TLS terminated at a reverse proxy (T1) | deployment, not code |
 | **9** | multiple backends: client-side view comparison plus a per-backend cache | planned (§7.12) |
 
 **Every phase runs standalone and can be rolled back.**
 
-Phases 0–7 are in the tree. **8 and 9 are a plan, not a description** — they are
-written out in §7.11 and §7.12 so the reasoning is reviewable before any code
-exists, which is the same order §3–§6 were written in.
+Phases 0–8a are in the tree. **9 is a plan, not a description** — it is written
+out in §7.12 so the reasoning is reviewable before any code exists, which is the
+same order §3–§6 were written in. T1 is deliberately not a phase: TLS belongs to
+the proxy in front (§7.11), and a certificate inside the binary would buy nothing
+that the proxy does not already do better.
 
 ### Notes on multi-source sync (`feed/sync.go`)
 

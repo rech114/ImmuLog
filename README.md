@@ -23,6 +23,7 @@ The web UI presents the same history as a chat. Messages can be signed, feeds ca
 - Multi-remote synchronization with quarantine and fast-forward-only updates
 - Snapshot gossip: whole-view comparison with peers, which reaches a feed a relay never showed you
 - Split-view detection between peers
+- A token-gated HTTP surface, with a cookie unlock and a restrictive security-header policy
 - External anchoring through a small HTTP publisher interface
 - Optional message-body encryption with per-epoch keys
 - Retraction as an appended event rather than deletion
@@ -55,6 +56,25 @@ Start the server:
 The default address is http://localhost:8081 and the default repository directory is `./repoDB`.
 
 The frontend is embedded into the binary, so Node.js is not required to run a node.
+
+## Access
+
+The HTTP surface is closed by default. On first start the node generates a token and prints it once:
+
+```
+INFO generated an HTTP token for this run token=3f2a...
+INFO open this once to store it as a cookie url=http://localhost:8081/?token=3f2a...
+```
+
+Open that URL once. The token is stored in an `HttpOnly` cookie and immediately redirected out of the address bar. Pin `IMMULOG_TOKEN` to keep it stable across restarts.
+
+The token is a **service credential, not an identity**. Authenticity comes from the commit signature: someone who steals the token can read this node and send messages *they signed*. They cannot impersonate anyone. See [DESIGN.md §7.9](docs/DESIGN.md).
+
+`GET /api/health` answers without a token (with `{"ok":true}`) so a liveness probe works. Everything else, `/api/snapshot` included, requires one.
+
+`IMMULOG_OPEN=1` runs without a token. The node warns about it at startup, in the same list as its other missing protections.
+
+**TLS is not built in.** Terminate it at a reverse proxy; see [DESIGN.md §7.11](docs/DESIGN.md) for what TLS and the token each do and do not protect, and §7.12 for the part neither of them covers.
 
 ## Signing
 
@@ -126,6 +146,8 @@ IMMULOG_PEERS="alice=http://10.0.0.7:8082,carol=http://10.0.0.9:8082" ./immulog
 ```
 
 A view costs one request, so gossip can reach peers you do not fetch from. It is **read-only**: nothing a peer claims is ever promoted into `refs/feeds/*`. A feed only peers can see is listed under Peers, never raised as an alarm. And with fewer than three peers a disagreement cannot be attributed to either side, which the server says at startup.
+
+A peer behind a token needs that node's token in the URL — `IMMULOG_PEERS="carol=http://10.0.0.9:8083/?token=..."` — and the node moves it into an `Authorization` header before the request leaves, so it does not end up in the peer's access log.
 
 ## Message-body encryption
 
@@ -301,6 +323,8 @@ ImmuLog keeps these operations behind `core/gitx` instead of implementing Git ob
 |----------|---------|-------------|
 | `IMMULOG_REPO` | `./repoDB` | Local bare Git repository |
 | `PORT` | `8081` | HTTP listen port |
+| `IMMULOG_TOKEN` | generated per run | Service token for the HTTP surface; pin it to keep it stable across restarts |
+| `IMMULOG_OPEN` | unset | Set to `1` to run without a token; the node warns about it at startup |
 | `IMMULOG_REMOTES` | unset | Comma-separated Git sync sources, using `url` or `name=url` |
 | `IMMULOG_ANCHOR_URL` | unset | Optional external anchoring service |
 | `IMMULOG_SYNC_INTERVAL` | `5s` | Synchronization interval |
@@ -362,10 +386,13 @@ immulog/
 ├── internal/
 │   └── web/
 │       ├── http.go
+│       ├── auth.go
+│       ├── headers.go
 │       ├── sse.go
 │       └── guard.go
 ├── web/
 │   ├── index.html
+│   ├── unlock.html
 │   ├── style.css
 │   └── app/
 │       ├── main.js

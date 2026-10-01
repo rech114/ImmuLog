@@ -35,6 +35,9 @@ type Config struct {
 	Remotes   []feed.Remote
 	Peers     []feed.GossipPeer
 	Publisher feed.Publisher
+	// Token gates the HTTP surface (§7.11, T2). Empty means open, which main.go
+	// only chooses through an explicit opt-out that it warns about.
+	Token string
 }
 
 // Server wires the domain layer to the transport layer.
@@ -48,6 +51,7 @@ type Server struct {
 	publisher feed.Publisher
 	state     *State
 	log       *slog.Logger
+	token     string
 
 	pushReq chan struct{}
 
@@ -65,6 +69,7 @@ func New(cfg Config) *Server {
 		remotes:   cfg.Remotes,
 		peers:     cfg.Peers,
 		publisher: cfg.Publisher,
+		token:     cfg.Token,
 		state:     &State{},
 		log:       slog.Default(),
 		pushReq:   make(chan struct{}, pushQueue),
@@ -73,6 +78,10 @@ func New(cfg Config) *Server {
 }
 
 // Handler returns the complete route table.
+//
+// Two wrappers, both in service of §7.11: the token decides who may talk to
+// this port at all (T2), and the headers decide what a served page is allowed
+// to do to the person reading it (T3).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/stream", s.handleStream)
@@ -83,7 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.Handle("GET /", http.FileServerFS(s.files)) // same-origin: zero CORS config
-	return mux
+	return securityHeaders(s.guard(mux))
 }
 
 // ── Write entry ─────────────────────────────────────────────────────

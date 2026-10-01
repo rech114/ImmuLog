@@ -23,6 +23,7 @@ Web 界面把这套历史呈现成聊天记录。消息可以使用 Git SSH 签�
 - 多源同步：先进入隔离区，再校验，只允许 fast-forward
 - Snapshot gossip（快照流言）：与对端比对**整体视图**，能发现 relay 从未告诉你的 feed
 - 多节点之间的 split-view 检测
+- 带 token 门禁的 HTTP 服务：cookie 解锁页 + 一批严格的安全响应头
 - 可选的外部锚定服务
 - 可选的消息体加密，使用按 epoch 划分的密钥
 - 撤回通过追加事件实现，不直接删除原始对象
@@ -55,6 +56,25 @@ git config --global user.email "you@example.com"
 默认监听 http://localhost:8081，Git 仓库默认使用 `./repoDB`。
 
 前端会直接嵌入二进制，运行节点不需要安装 Node.js。
+
+## 访问
+
+HTTP 服务默认是关闭的。首次启动时节点会生成一个 token，并且只打印一次：
+
+```
+INFO generated an HTTP token for this run token=3f2a...
+INFO open this once to store it as a cookie url=http://localhost:8081/?token=3f2a...
+```
+
+打开那个 URL 一次即可：token 会被存进 `HttpOnly` cookie，并且立刻从地址栏重定向掉。把 `IMMULOG_TOKEN` 固定下来可以让它在重启后保持稳定。
+
+token 是**服务凭证，不是身份**。真实性来自 commit 签名：偷到 token 的人可以读这个节点、并且只能发送**他自己签名**的消息，无法冒充任何人。见 [DESIGN.md §7.9](docs/DESIGN.md)。
+
+`GET /api/health` 不需要 token 就会应答（只回 `{"ok":true}`），这样存活探针能用；其余全部接口（包括 `/api/snapshot`）都需要。
+
+`IMMULOG_OPEN=1` 可以在没有 token 的情况下运行。节点会在启动日志里警告，和它其它缺失的保护并列在一起。
+
+**TLS 没有内置。** 请在最前面的反向代理上终止；TLS 和 token 各自保护什么、不保护什么，见 [DESIGN.md §7.11](docs/DESIGN.md)，两者都覆盖不到的那部分见 §7.12。
 
 ## 签名
 
@@ -126,6 +146,8 @@ IMMULOG_PEERS="alice=http://10.0.0.7:8082,carol=http://10.0.0.9:8082" ./immulog
 ```
 
 一次视图比对只需一个请求，因此 gossip 能覆盖到你并不从中拉取的节点。它是**只读的**：对端声称的任何内容都不会被写进 `refs/feeds/*`。只有对端能看到、本机没有的 feed 会列在 Peers 面板里，而不会被当作告警。另外，少于三个对端时无法判断分歧是哪一方的问题，启动日志会说明这一点。
+
+对端如果开了 token 门禁，需要在 URL 里带上那个节点的 token —— `IMMULOG_PEERS="carol=http://10.0.0.9:8083/?token=..."`；节点会在请求发出前把它移到 `Authorization` 头里，因此它不会落到对端的访问日志中。
 
 ## 消息体加密
 
@@ -301,6 +323,8 @@ ImmuLog 没有重新实现 Git object storage 或 Git transport，而是把这�
 |------|--------|------|
 | `IMMULOG_REPO` | `./repoDB` | 本地 bare Git 仓库 |
 | `PORT` | `8081` | HTTP 监听端口 |
+| `IMMULOG_TOKEN` | 每次运行随机生成 | HTTP 服务的 token；固定它可以让重启后保持稳定 |
+| `IMMULOG_OPEN` | 未设置 | 设为 `1` 可在无 token 下运行；节点会在启动日志里警告 |
 | `IMMULOG_REMOTES` | 未设置 | Git 同步源，支持 `url` 或 `name=url`，多个源用逗号分隔 |
 | `IMMULOG_ANCHOR_URL` | 未设置 | 可选的外部锚定服务 |
 | `IMMULOG_SYNC_INTERVAL` | `5s` | 同步间隔 |
@@ -362,10 +386,13 @@ immulog/
 ├── internal/
 │   └── web/
 │       ├── http.go
+│       ├── auth.go
+│       ├── headers.go
 │       ├── sse.go
 │       └── guard.go
 ├── web/
 │   ├── index.html
+│   ├── unlock.html
 │   ├── style.css
 │   └── app/
 │       ├── main.js

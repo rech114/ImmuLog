@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { VIEWPORTS, session, shot } from '../lib/harness.mjs';
 import {
   GIT_ENV, git, gitIn, freePort, buildBinary, initRepo, startNode,
-  waitHealthy, stopNode, publish,
+  waitHealthy, stopNode, publish, authHeaders, signIn,
 } from '../lib/harness.mjs';
 
 const SYNC_MS = '400ms';
@@ -73,7 +73,7 @@ export default async function federation(browser, _base, c) {
 
     const post = async (base, body) => (await fetch(base + '/api/commit', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ kind: 'msg', body }),
     })).json();
 
@@ -108,6 +108,7 @@ export default async function federation(browser, _base, c) {
     const { ctx, page } = await session(browser, VIEWPORTS[0]);
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)));
+    await signIn(ctx, B.base); // §7.11 T2: the browser needs the cookie
     await page.goto(B.base + '/', { waitUntil: 'load' });
     await page.waitForSelector('#input', { timeout: 15000 });
 
@@ -129,7 +130,7 @@ export default async function federation(browser, _base, c) {
     c.ok(bWitness === sent.oid, 'B established a witness anchor for the foreign feed');
 
     // ── 4) Snapshot and peer state ───────────────────────────────
-    const snap = await (await fetch(B.base + '/api/snapshot')).json();
+    const snap = await (await fetch(B.base + '/api/snapshot', { headers: authHeaders() })).json();
     c.ok(/^[0-9a-f]{40}$/.test(snap.digest || ''), `B computes the snapshot digest independently (${String(snap.digest).slice(0, 8)}...)`);
     c.ok((snap.refs || []).some((r) => r.name === aRef), 'the snapshot includes the A feed');
     c.ok((snap.peers || []).length === 1 && snap.peers[0].ok, 'the peer is reported reachable and consistent');
@@ -180,7 +181,7 @@ export default async function federation(browser, _base, c) {
     c.ok(!isAncestor(bRepo, forged, afterTip), 'the forged commit is not in the B history');
     c.ok(isAncestor(bRepo, sent.oid, afterTip), 'the complete honest history is still held by B');
 
-    const peers = (await (await fetch(B.base + '/api/snapshot')).json()).peers ?? [];
+    const peers = (await (await fetch(B.base + '/api/snapshot', { headers: authHeaders() })).json()).peers ?? [];
     c.ok(peers.length === 1 && peers[0].ok === false, 'the peer is marked inconsistent');
 
     await shot(page, 'federation-alarm.png');

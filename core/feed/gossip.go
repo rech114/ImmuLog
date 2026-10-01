@@ -109,7 +109,10 @@ func Gossip(ctx context.Context, repo *gitx.Repo, peers []GossipPeer, client *ht
 
 	holders := map[string]int{}
 	for _, p := range peers {
-		report := PeerReport{Name: p.Name, URL: p.URL}
+		// The report reaches the browser through /api/snapshot, so a peer's
+		// credential must not travel with it: `IMMULOG_PEERS` can only put the
+		// token in the URL (§7.11).
+		report := PeerReport{Name: p.Name, URL: redactToken(p.URL)}
 
 		theirs, err := FetchSnapshot(ctx, client, p.URL)
 		if err != nil {
@@ -201,9 +204,22 @@ func FetchSnapshot(ctx context.Context, client *http.Client, base string) (Snaps
 	if err != nil {
 		return Snapshot{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	// A peer node behind the token (§7.11 T2) can only be configured with its
+	// credential inside its URL, because that is the one place an operator can
+	// put it without a new field in the peer list. It is moved into a header
+	// here so a shared secret does not land in the peer's access log.
+	u, err := url.Parse(endpoint)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	token := takeToken(u)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -222,6 +238,41 @@ func FetchSnapshot(ctx context.Context, client *http.Client, base string) (Snaps
 		return Snapshot{}, errors.New("peer sent a malformed digest")
 	}
 	return Snapshot{Digest: body.Digest, Refs: body.Refs}, nil
+}
+
+// takeToken pulls `?token=` out of a peer URL and returns it, leaving the URL
+// without it. A credential in a request line ends up in every log on the way.
+func takeToken(u *url.URL) string {
+	q := u.Query()
+	token := q.Get("token")
+	if token == "" {
+		return ""
+	}
+	q.Del("token")
+	u.RawQuery = q.Encode()
+	return token
+}
+
+// redactToken returns a peer URL with its credential replaced, for anything
+// that leaves this process -- the browser, the peers panel, a log line. The
+// marker stays visible on purpose: a reader should know a credential is there,
+// and that it is being held back.
+//
+// The replacement is a plain word rather than `***`, because a query value goes
+// through url encoding and `%2A%2A%2A` reads like an escaped secret rather than
+// a withheld one.
+func redactToken(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	if !q.Has("token") {
+		return raw
+	}
+	q.Set("token", "redacted")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // gossipEndpoint accepts "host:port", "http://host:port" and a full endpoint

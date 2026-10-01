@@ -343,6 +343,9 @@ func TestGossipEndpointAcceptsWhatOperatorsWrite(t *testing.T) {
 		{"http://10.0.0.7:8082", "http://10.0.0.7:8082" + snapshotPath, true},
 		{"http://10.0.0.7:8082/", "http://10.0.0.7:8082" + snapshotPath, true},
 		{"http://10.0.0.7:8082/api/snapshot", "http://10.0.0.7:8082" + snapshotPath, true},
+		// A peer behind the token (§7.11 T2) carries its credential in the URL;
+		// the path is still filled in around it.
+		{"http://10.0.0.7:8082/?token=x", "http://10.0.0.7:8082" + snapshotPath + "?token=x", true},
 		{"", "", false},
 		{"   ", "", false},
 		{"http://", "", false},
@@ -361,6 +364,83 @@ func TestGossipEndpointAcceptsWhatOperatorsWrite(t *testing.T) {
 		if got != c.want {
 			t.Fatalf("%q: want %q, got %q", c.in, c.want, got)
 		}
+	}
+}
+
+// A peer node behind the token (§7.11 T2) can only be configured with its
+// credential inside its URL. The client must move it into a header, or a shared
+// secret ends up in every access log between the two nodes.
+func TestFetchSnapshotMovesAPeerTokenIntoAHeader(t *testing.T) {
+	var gotPath, gotQuery, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{"digest": strings.Repeat("a", 40), "refs": []any{}})
+	}))
+	defer srv.Close()
+
+	snap, err := FetchSnapshot(context.Background(), nil, srv.URL+"/?token=sekrit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Digest != strings.Repeat("a", 40) {
+		t.Fatalf("the reply should still be read: %+v", snap)
+	}
+	if gotPath != snapshotPath {
+		t.Fatalf("the credential must not displace the endpoint: %q", gotPath)
+	}
+	if gotAuth != "Bearer sekrit" {
+		t.Fatalf("the token must travel as a header, got %q", gotAuth)
+	}
+	if strings.Contains(gotQuery, "token") {
+		t.Fatalf("the token must not stay in the request line, got %q", gotQuery)
+	}
+}
+
+// A peer's URL carries its credential, and the report is handed to the browser
+// through /api/snapshot. The secret must not go with it.
+func TestGossipReportNeverCarriesAPeerToken(t *testing.T) {
+	repo, _ := node(t, "alice")
+	ctx := context.Background()
+	mustSend(t, storeOf(t, repo, "alice"), "one")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"digest": strings.Repeat("a", 40), "refs": []any{}})
+	}))
+	defer srv.Close()
+
+	res, err := Gossip(ctx, repo, []GossipPeer{{Name: "carol", URL: srv.URL + "/?token=sekrit"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Peers) != 1 {
+		t.Fatalf("expected one report, got %+v", res.Peers)
+	}
+	url := res.Peers[0].URL
+	if strings.Contains(url, "sekrit") {
+		t.Fatalf("the peer's credential leaked into the report: %q", url)
+	}
+	if !strings.Contains(url, "token=redacted") {
+		t.Fatalf("the report should still show that a credential is held back: %q", url)
+	}
+}
+
+// A peer with no credential is reported exactly as configured.
+func TestGossipReportLeavesAnOrdinaryPeerURLAlone(t *testing.T) {
+	repo, _ := node(t, "alice")
+	ctx := context.Background()
+	mustSend(t, storeOf(t, repo, "alice"), "one")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"digest": strings.Repeat("a", 40), "refs": []any{}})
+	}))
+	defer srv.Close()
+
+	res, err := Gossip(ctx, repo, []GossipPeer{{Name: "carol", URL: srv.URL}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Peers[0].URL; got != srv.URL {
+		t.Fatalf("want %q, got %q", srv.URL, got)
 	}
 }
 

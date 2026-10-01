@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { VIEWPORTS, session, shot } from '../lib/harness.mjs';
 import {
   git, freePort, buildBinary, initRepo, startNode,
-  waitHealthy, stopNode, publish,
+  waitHealthy, stopNode, publish, TEST_TOKEN, authHeaders, signIn,
 } from '../lib/harness.mjs';
 
 const SYNC = '400ms';
@@ -47,7 +47,7 @@ async function waitFor(label, fn, timeout = 25000) {
   throw new Error(`${label} did not happen within ${timeout}ms (last: ${JSON.stringify(last)})`);
 }
 
-const snapshotOf = async (base) => (await fetch(base + '/api/snapshot')).json();
+const snapshotOf = async (base) => (await fetch(base + '/api/snapshot', { headers: authHeaders() })).json();
 
 export default async function gossip(browser, _base, c) {
   const work = await mkdtemp(join(tmpdir(), 'immulog-views-'));
@@ -72,7 +72,10 @@ export default async function gossip(browser, _base, c) {
     for (const [k, who] of [['a', 'alice'], ['b', 'bob'], ['c', 'carol'], ['d', 'dave']]) initRepo(repos[k], who);
 
     const ports = { a: await freePort(), b: await freePort(), c: await freePort(), d: await freePort() };
-    const peer = (name, k) => `${name}=http://127.0.0.1:${ports[k]}`;
+    // A peer behind the token (§7.11 T2) carries its credential in the URL --
+    // the one place an operator can put it without new configuration surface.
+    // core/feed moves it into a header before it leaves.
+    const peer = (name, k) => `${name}=http://127.0.0.1:${ports[k]}/?token=${TEST_TOKEN}`;
 
     nodes.a = startNode({
       bin, repo: repos.a, port: ports.a, remotes: [`shared=${hubA}`, `other=${hubB}`], who: 'alice',
@@ -112,7 +115,7 @@ export default async function gossip(browser, _base, c) {
 
     const post = async (base, body) => (await fetch(base + '/api/commit', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ kind: 'msg', body }),
     })).json();
 
@@ -183,6 +186,7 @@ export default async function gossip(browser, _base, c) {
     const { ctx, page } = await session(browser, VIEWPORTS[0]);
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)));
+    await signIn(ctx, nodes.b.base); // §7.11 T2
     await page.goto(nodes.b.base + '/', { waitUntil: 'load' });
     await page.waitForSelector('#input', { timeout: 15000 });
 

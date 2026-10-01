@@ -127,6 +127,24 @@ export const GIT_ENV = {
   GIT_COMMITTER_EMAIL: 'harness@example.com',
 };
 
+// ── The node token (DESIGN §7.11, T2) ───────────────────────────────
+//
+// Every check that drives the real binary has to present it. It is a fixed
+// value rather than a generated one because a node logs a generated token once
+// and a test cannot read it back out of the log stream.
+
+export const TEST_TOKEN = 'test-token-not-a-secret';
+
+/** Headers for a direct API call from a check. */
+export const authHeaders = (token = TEST_TOKEN) => ({ Authorization: `Bearer ${token}` });
+
+/** Put the token into a browser context as the cookie the server would have set. */
+export async function signIn(ctx, base, token = TEST_TOKEN) {
+  await ctx.addCookies([
+    { name: 'immulog_token', value: token, url: base, httpOnly: true, sameSite: 'Strict' },
+  ]);
+}
+
 /** Run git directly from a test -- production code forbids os/exec, tests do not. */
 export const git = (dir, ...args) =>
   execFileSync('git', ['-C', dir, ...args], { env: GIT_ENV, encoding: 'utf8' }).trim();
@@ -172,22 +190,27 @@ export function startNode({ bin, repo, port, remotes = [], env = {}, who = 'node
       IMMULOG_REPO: repo,
       PORT: String(port),
       IMMULOG_REMOTES: remotes.join(','),
+      // §7.11 T2: the HTTP surface is closed unless it is given a token. A
+      // check that wants the old wide-open behaviour passes IMMULOG_OPEN=1.
+      IMMULOG_TOKEN: TEST_TOKEN,
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const node = { proc, log: '', base: `http://127.0.0.1:${port}` };
+  const node = { proc, log: '', base: `http://127.0.0.1:${port}`, token: env.IMMULOG_TOKEN ?? TEST_TOKEN };
   proc.stdout.on('data', (d) => (node.log += d));
   proc.stderr.on('data', (d) => (node.log += d));
   return node;
 }
 
-export async function waitHealthy(base, ms = 30000) {
+export async function waitHealthy(base, ms = 30000, token = TEST_TOKEN) {
   const deadline = Date.now() + ms;
   let last;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(base + '/api/health');
+      // Anonymous health answers with {ok} only; the token is needed for the
+      // payload the checks actually assert on.
+      const r = await fetch(base + '/api/health', { headers: authHeaders(token) });
       if (r.ok) return await r.json();
     } catch (e) {
       last = e;

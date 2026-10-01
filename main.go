@@ -120,7 +120,17 @@ func run() error {
 		publisher = feed.HTTPPublisher{URL: u}
 	}
 
-	// 6) Assemble
+	// 6) The HTTP surface is gated by a token (§7.9, §7.11 T2).
+	//
+	// It is a *service* credential and never an identity: identity comes from
+	// git config and from signatures, and no handler reads it from a request.
+	// So this decides only who may talk to this port, not who anyone is.
+	token, generated, err := httpToken()
+	if err != nil {
+		return err
+	}
+
+	// 7) Assemble
 	hub := web.NewHub()
 	srv := web.New(web.Config{
 		Store:     store,
@@ -130,6 +140,7 @@ func run() error {
 		Remotes:   remotes,
 		Peers:     peers,
 		Publisher: publisher,
+		Token:     token,
 	})
 	srv.Watch(ctx,
 		duration("IMMULOG_SYNC_INTERVAL", web.SyncInterval),
@@ -137,8 +148,9 @@ func run() error {
 		duration("IMMULOG_GOSSIP_INTERVAL", web.GossipInterval))
 
 	// No WriteTimeout: SSE is a long-lived connection and it would cut it off
+	port := env("PORT", "8081")
 	s := &http.Server{
-		Addr:              ":" + env("PORT", "8081"),
+		Addr:              ":" + port,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -150,10 +162,23 @@ func run() error {
 		_ = s.Shutdown(shut)
 	}()
 
+	if generated {
+		// Printed once, so the operator can actually get in. Pinning
+		// IMMULOG_TOKEN keeps it stable across restarts.
+		log.Info("generated an HTTP token for this run", "token", token)
+		log.Info("open this once to store it as a cookie",
+			"url", "http://localhost:"+port+"/?token="+token)
+	}
+
 	log.Info("ImmuLog ready",
 		"addr", s.Addr, "repo", dir, "feed", pub,
 		"signed", store.Signed(), "remotes", len(remotes),
 		"gossip", len(peers), "anchor", publisher != nil)
+	if token == "" {
+		log.Warn("IMMULOG_OPEN=1: the HTTP surface is unauthenticated -- anyone who can reach the port " +
+			"can read every message, post as this identity, retract messages and discard epoch keys " +
+			"(see DESIGN.md §7.11)")
+	}
 	if store.Signed() {
 		log.Info("messages will be signed", "fingerprint", feed.ShortKey(fingerprint))
 	} else {
@@ -212,6 +237,25 @@ func parseRemotes(spec string) []feed.Remote {
 		out = append(out, feed.Remote{Name: name, URL: url})
 	}
 	return out
+}
+
+// httpToken resolves the service token from the environment.
+//
+// Open mode must be **asked for**: a node that is accidentally open is far
+// worse than one that is accidentally locked, so a missing variable generates a
+// token rather than disabling the check.
+func httpToken() (token string, generated bool, err error) {
+	if os.Getenv("IMMULOG_OPEN") == "1" {
+		return "", false, nil
+	}
+	if t := strings.TrimSpace(os.Getenv("IMMULOG_TOKEN")); t != "" {
+		return t, false, nil
+	}
+	t, err := web.NewToken()
+	if err != nil {
+		return "", false, err
+	}
+	return t, true, nil
 }
 
 // gossipPeers adapts the shared `name=url` parser's output for the gossip loop.
