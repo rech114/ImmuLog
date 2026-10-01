@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ① 逻辑冒烟：jsdom，快，跑在所有平台的共同部分
+  # ① 逻辑冒烟：jsdom，秒级，跑在前端逻辑层
   smoke:
     name: 逻辑冒烟 (jsdom)
     runs-on: ubuntu-latest
@@ -14,39 +14,43 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
         working-directory: tools
-      - run: npm run smoke
+      - name: 跑逻辑冒烟
+        run: npm run smoke
         working-directory: tools
-      - name: 上传逻辑冒烟日志
+      - name: 上传日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-logs
+          name: smoke-log
           path: tools/smoke.log
           retention-days: 14
 
-  # ② 视觉/布局冒烟：真实 Chromium，跑在 x86_64 runner 上
-  visual:
-    name: 视觉布局冒烟 (Chromium)
+  # ② 浏览器检查：真实 Chromium（x86_64 runner，规避本机 aarch64 的指令集风险）
+  browser:
+    name: 浏览器检查 (Chromium)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
         working-directory: tools
-      - run: npx playwright install --with-deps chromium
+      - name: 安装 Chromium
+        run: npx playwright install --with-deps chromium
         working-directory: tools
-      - name: 跑视觉检查
-        run: node visual.mjs 2>&1 | tee visual.log
+      - name: 跑布局 / 形状 / 韧性 / SSE / 无障碍
+        run: npm run visual
         working-directory: tools
       - name: 上传截图与实测数据
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: visual-report
+          name: browser-report
           path: |
             artifacts/
             tools/visual.log
