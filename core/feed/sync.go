@@ -184,7 +184,7 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 		if err := AdvanceWitness(ctx, repo, ref, best); err != nil {
 			continue
 		}
-		res.Advanced = append(res.Advanced, Decode(raw, ref)...)
+		res.Advanced = append(res.Advanced, Decode(raw, ref, Opener(ctx, repo))...)
 	}
 
 	// ④ 汇总远端状况

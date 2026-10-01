@@ -74,6 +74,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stream", s.handleStream)
 	mux.HandleFunc("POST /api/commit", s.handleCommit)
 	mux.HandleFunc("POST /api/rotate", s.handleRotate)
+	mux.HandleFunc("POST /api/epoch", s.handleNewEpoch)
+	mux.HandleFunc("POST /api/shred", s.handleShred)
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.Handle("GET /", http.FileServerFS(s.files)) // 同源：零 CORS 配置
@@ -155,6 +157,67 @@ func commitStatus(err error) (int, string) {
 func errorCode(err error) string {
 	_, code := commitStatus(err)
 	return code
+}
+
+// ── 加密世代 ──────────────────────────────────────────────────────
+
+type encPayload struct {
+	Enabled bool `json:"enabled"`
+	Epoch   int  `json:"epoch,omitempty"`
+	Held    bool `json:"held"`
+	Members int  `json:"members,omitempty"`
+}
+
+func (s *Server) encryption(ctx context.Context) encPayload {
+	epochs, err := s.store.Epochs(ctx)
+	if err != nil || len(epochs) == 0 {
+		return encPayload{}
+	}
+	cur := epochs[len(epochs)-1]
+	return encPayload{Enabled: true, Epoch: cur.N, Held: cur.Held, Members: cur.Members}
+}
+
+// handleNewEpoch 轮换到一个新的加密世代。
+//
+// 收件人取「近期历史里见过的加密公钥」（含本机）—— 新成员在发过第一条
+// 消息之后就会被自动带上，而他读不到自己加入之前的世代。
+func (s *Server) handleNewEpoch(w http.ResponseWriter, r *http.Request) {
+	recips, err := s.store.KnownRecipients(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "recipients_failed"})
+		return
+	}
+	e, err := s.store.RotateEpoch(r.Context(), recips)
+	if err != nil {
+		s.log.Warn("轮换加密世代失败", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "epoch_failed"})
+		return
+	}
+	s.hub.Broadcast(Event{Type: "encryption", Data: s.encryption(r.Context())})
+	writeJSON(w, http.StatusCreated, e)
+}
+
+type shredReq struct {
+	Epoch int `json:"epoch"`
+}
+
+// handleShred 丢弃本机某个世代的明文密钥。
+//
+// 它**只丢本机这一份**。链上还留着封装给我们的那份，所以丢弃被记成
+// 一个持久决定（见 feed.ShredEpochKey），并且会在链上留下可审计的公告。
+func (s *Server) handleShred(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 256)
+	var req shredReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Epoch <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad_json"})
+		return
+	}
+	if _, err := s.store.ShredEpoch(r.Context(), req.Epoch); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "shred_failed", "detail": err.Error()})
+		return
+	}
+	s.hub.Broadcast(Event{Type: "encryption", Data: s.encryption(r.Context())})
+	writeJSON(w, http.StatusCreated, map[string]any{"epoch": req.Epoch, "shredded": true})
 }
 
 // ── 密钥轮换 ──────────────────────────────────────────────────────
@@ -328,6 +391,7 @@ type helloPayload struct {
 	Head       string          `json:"head,omitempty"`
 	Signed     bool            `json:"signed"`
 	Identity   identityPayload `json:"identity"`
+	Encryption encPayload      `json:"encryption"`
 	Snapshot   string          `json:"snapshot,omitempty"`
 	AnchoredAt string          `json:"anchoredAt,omitempty"`
 	External   bool            `json:"external"`
@@ -339,11 +403,12 @@ func (s *Server) hello(ctx context.Context) helloPayload {
 	snap, anchor, peers := s.state.Snapshot()
 
 	p := helloPayload{
-		Head:     head,
-		Signed:   s.store.Signed(),
-		Snapshot: snap.Digest,
-		Peers:    peers,
-		Identity: identityPayload{Signed: s.store.Signed()},
+		Head:       head,
+		Signed:     s.store.Signed(),
+		Snapshot:   snap.Digest,
+		Peers:      peers,
+		Identity:   identityPayload{Signed: s.store.Signed()},
+		Encryption: s.encryption(ctx),
 	}
 	if p.Identity.Signed {
 		if k, err := s.store.CurrentKey(ctx); err == nil {

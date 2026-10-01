@@ -401,6 +401,13 @@ h6>i,
   opacity: .6;
 }
 
+/* 锁住的消息：密文仍在、位置仍在，只是读不了 —— 视觉上要说清这一点，
+   不能做得像"这条消息不存在"。 */
+.msg.locked .text {
+  color: var(--on-surface-variant, #b9b9bd);
+  font-style: italic;
+}
+
 /* ── 告警：时间线里的封条，不是 toast ─────────────────────────── */
 
 .alarm {

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -84,13 +85,26 @@ func run() error {
 		return err
 	}
 
-	// 3) 前端：内嵌同源 —— 零 CORS，零构建链
+	// 5) 端到端加密（可选，但一旦开启就粘住）
+	//
+	// 触发条件二选一：显式要求，或本机已经有加密身份。
+	// 后者保证「开过一次就一直是开的」—— 否则忘了带环境变量，
+	// 后续消息会悄悄退回明文，而这话说出去就收不回来了。
+	encoded := os.Getenv("IMMULOG_ENCRYPT") == "1" || feed.HasIdentity(dir)
+	if encoded {
+		if err := store.SetupEncryption(ctx); err != nil {
+			return fmt.Errorf("启用加密失败：%w", err)
+		}
+		log.Info("端到端加密已启用", "keys", filepath.Join(dir, "immulog-keys"))
+	}
+
+	// 6) 前端：内嵌同源 —— 零 CORS，零构建链
 	files, err := fs.Sub(embedded, "web")
 	if err != nil {
 		return err
 	}
 
-	// 4) 多源与外部锚定（都可选）
+	// 7) 多源与外部锚定（都可选）
 	remotes := parseRemotes(os.Getenv("IMMULOG_REMOTES"))
 	var publisher feed.Publisher
 	if u := os.Getenv("IMMULOG_ANCHOR_URL"); u != "" {

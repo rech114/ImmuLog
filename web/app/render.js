@@ -34,6 +34,8 @@ const refs = {
   anchoredAt: $('#anchored-at'),
   identityLine: $('#identity-line'),
   identityChip: $('#identity-chip'),
+  encLine: $('#enc-line'),
+  encChip: $('#enc-chip'),
 };
 
 const shapeClass = (state) =>
@@ -83,6 +85,7 @@ function messageEl(it) {
   el.className = 'msg';
   el.dataset.oid = it.oid;
   el.dataset.state = it.state;
+  if (it.locked) el.classList.add('locked');
 
   el.innerHTML = `
     <div class="${shapeClass(it.state)}" data-state="${it.state}"></div>
@@ -91,13 +94,15 @@ function messageEl(it) {
         <span class="who"></span>
         <button class="meta" aria-expanded="false"></button>
       </div>
-      <p class="text no-margin"></p>
+      <p class="text"></p>
       <span class="strike-note"></span>
       <div class="detail"></div>
     </div>`;
 
   el.querySelector('.who').textContent = it.author;
-  el.querySelector('.text').textContent = it.body;
+  el.querySelector('.text').textContent = it.locked
+    ? '（无法解密 —— 密钥已被丢弃，或者你不是这个世代的收件人）'
+    : it.body;
   paint(el, it);
 
   const meta = el.querySelector('.meta');
@@ -110,8 +115,11 @@ function messageEl(it) {
 
 function paint(el, it) {
   el.querySelector('.meta').textContent = `#${it.seq} · ${it.oid.slice(0, 6)}`;
+  const enc = it.epoch
+    ? `\n加密世代  ${it.epoch}${it.locked ? '（本机读不了）' : ''}`
+    : '';
   el.querySelector('.detail').textContent =
-    `对象地址  ${it.oid}\n签名      ${it.sig || '（演示数据）'}\n状态      ${it.state}`;
+    `对象地址  ${it.oid}\n签名      ${it.sig || '（未签名）'}${enc}\n状态      ${it.state}`;
 }
 
 function alarmEl(it) {
@@ -191,6 +199,21 @@ export function meta(s) {
     refs.identityLine.textContent = id.signed
       ? `签名密钥 ${id.key || '（读取中）'}`
       : '未配置 user.signingkey，身份可被冒名';
+  }
+
+  // 加密世代：密钥丢了不等于消息不存在，所以这里说的是"能不能读"，不是"有没有"
+  const enc = s.encryption;
+  if (enc) {
+    if (!enc.enabled) {
+      refs.encChip.textContent = '未启用';
+      refs.encLine.textContent = '正文以明文存进 git 对象，任何拿到副本的人都能读';
+    } else {
+      refs.encChip.textContent = `世代 ${enc.epoch}`;
+      refs.encChip.classList.toggle('error', !enc.held);
+      refs.encLine.textContent = enc.held
+        ? `${enc.members} 名收件人 · 密文随仓库复制，只有成员解得开`
+        : '密钥已被本机丢弃：密文仍在链上，但谁也解不开了';
+    }
   }
 
   refs.peers.innerHTML = '';

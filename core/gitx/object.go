@@ -37,6 +37,8 @@ type RawCommit struct {
 	Reason   string
 	Kind     string // `ImmuLog-Kind` trailer
 	Declared string // `ImmuLog-Key` trailer（只有轮换公告才有）
+	Epoch    string // `ImmuLog-Epoch` trailer
+	Enc      string // `ImmuLog-Enc` trailer —— 作者的加密公钥
 	Body     string
 }
 
@@ -166,6 +168,8 @@ func parseLog(raw string) []RawCommit {
 		}
 		c.Declared = trailerIn(f[8], "ImmuLog-Key")
 		c.Kind = trailerIn(f[8], "ImmuLog-Kind")
+		c.Epoch = trailerIn(f[8], "ImmuLog-Epoch")
+		c.Enc = trailerIn(f[8], "ImmuLog-Enc")
 		if secs, err := strconv.ParseInt(strings.TrimSpace(f[2]), 10, 64); err == nil {
 			c.At = time.Unix(secs, 0).UTC()
 		}

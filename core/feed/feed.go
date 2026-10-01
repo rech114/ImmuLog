@@ -30,6 +30,8 @@ const (
 	KindMsg     Kind = "msg"
 	KindRetract Kind = "retract"
 	KindRotate  Kind = "rotate" // 密钥轮换公告
+	KindEpoch   Kind = "epoch"  // 加密世代记录
+	KindShred   Kind = "shred"  // 丢弃某个世代的密钥
 )
 
 // trailer 键名。改这里等于改协议。
@@ -39,6 +41,8 @@ const (
 	trailerRetracts = "ImmuLog-Retracts"
 	trailerReason   = "ImmuLog-Reason"
 	trailerKey      = "ImmuLog-Key"
+	trailerEpoch    = "ImmuLog-Epoch"
+	trailerEnc      = "ImmuLog-Enc"
 )
 
 // MaxBody 是单条消息正文的上限。
@@ -74,6 +78,8 @@ type Message struct {
 	Kind     Kind      `json:"kind"`
 	Retracts string    `json:"retracts,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
+	Epoch    int       `json:"epoch,omitempty"`  // 加密世代；0 表示明文
+	Locked   bool      `json:"locked,omitempty"` // 有世代但本机解不开（密钥已丢弃或不是成员）
 	At       time.Time `json:"at"`
 }
 
@@ -97,6 +103,11 @@ type Store struct {
 
 	mu   sync.Mutex
 	tree string // 空 tree 的对象名，惰性计算后复用
+
+	// 当前加密世代的缓存。写路径每条消息都要用，
+	// 不能每次都去遍历 refs/keys/*（那是 N 次进程调用）。
+	epoch    int
+	epochKey []byte
 }
 
 // New 校验 git 身份并绑定 feed。身份只来自 git 配置，永不来自请求体（§4.2）。
@@ -187,7 +198,7 @@ func (s *Store) History(ctx context.Context, limit int) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Decode(raw, s.ref), nil
+	return Decode(raw, s.ref, s.OpenBody), nil
 }
 
 // Tip 返回当前链尾；空 feed 返回空串。
@@ -214,7 +225,23 @@ func (s *Store) append(ctx context.Context, kind Kind, body, retracts, reason st
 		return Message{}, err
 	}
 
-	oid, err := s.repo.Commit(ctx, tree, tip, render(kind, body, seq, retracts, reason), s.sign)
+	env := envelope{kind: kind, body: body, seq: seq, retracts: retracts, reason: reason}
+
+	// 有当前世代就把正文加密。密文进 git 对象（可自由复制），
+	// 明文密钥只在本机 —— 这条分界线就是整个阶段的全部意义。
+	if n, key := s.currentEpochLocked(ctx); n > 0 && key != nil {
+		ct, err := SealBody(key, body)
+		if err != nil {
+			return Message{}, err
+		}
+		env.body, env.epoch = ct, n
+	}
+	// 每条消息捎带自己的加密公钥，让别处知道该封装给谁
+	if me, err := LoadIdentity(s.repo.Dir); err == nil {
+		env.enc = me.Public()
+	}
+
+	oid, err := s.repo.Commit(ctx, tree, tip, render(env), s.sign)
 	if err != nil {
 		return Message{}, err
 	}
@@ -228,9 +255,27 @@ func (s *Store) append(ctx context.Context, kind Kind, body, retracts, reason st
 
 	return Message{
 		OID: oid, Seq: seq, Author: s.name, Body: body,
-		Kind: kind, Retracts: retracts, Reason: reason,
+		Kind: kind, Retracts: retracts, Reason: reason, Epoch: env.epoch,
 		At: time.Now().UTC(),
 	}, nil
+}
+
+// currentEpochLocked 返回当前世代及其明文密钥（0, nil 表示未启用加密）。
+// 调用方必须持有 s.mu。
+func (s *Store) currentEpochLocked(ctx context.Context) (int, []byte) {
+	if s.epoch > 0 {
+		return s.epoch, s.epochKey
+	}
+	n, err := s.CurrentEpoch(ctx)
+	if err != nil {
+		return 0, nil
+	}
+	key, err := s.OpenEpoch(ctx, n)
+	if err != nil {
+		return 0, nil
+	}
+	s.epoch, s.epochKey = n, key
+	return n, key
 }
 
 func (s *Store) nextSeq(ctx context.Context, tip string) (int, error) {
@@ -261,6 +306,18 @@ func (s *Store) emptyTree(ctx context.Context) (string, error) {
 	return t, nil
 }
 
+// envelope 是一条待编码的消息。用结构体而不是六个位置参数 ——
+// 加了 epoch / enc 之后位置参数已经数不清了。
+type envelope struct {
+	kind     Kind
+	body     string // 明文，或已加密的密文
+	seq      int
+	retracts string
+	reason   string
+	epoch    int    // 0 = 明文
+	enc      string // 本机加密公钥（启用加密时非空）
+}
+
 // render 把一条消息编码成 commit message。
 //
 // 正文与 trailer 块之间永远隔一个空行，且正文的尾部空白被清掉 ——
@@ -271,15 +328,16 @@ func (s *Store) emptyTree(ctx context.Context) (string, error) {
 //
 // ⚠️ trailer 值必须过 sanitizeValue：值里一个换行就能凭空造出
 // `ImmuLog-Seq: 999` 这种伪行，而 git 取最后一次出现 —— 伪造的会赢。
-func render(kind Kind, body string, seq int, retracts, reason string) string {
+func render(env envelope) string {
 	var head string
-	if kind == KindRetract {
-		head = sanitizeValue(reason)
+	switch env.kind {
+	case KindRetract:
+		head = sanitizeValue(env.reason)
 		if head == "" {
-			head = "撤回 " + short(oidOr(retracts))
+			head = "撤回 " + short(oidOr(env.retracts))
 		}
-	} else {
-		head = sanitizeText(body) // 正文保留换行，多行消息是合法的
+	default:
+		head = sanitizeText(env.body) // 正文保留换行，多行消息是合法的
 	}
 	if head == "" {
 		head = "（空消息）"
@@ -288,21 +346,32 @@ func render(kind Kind, body string, seq int, retracts, reason string) string {
 	var b strings.Builder
 	b.WriteString(head)
 	b.WriteString("\n\n")
-	b.WriteString(trailerKind + ": " + string(kind) + "\n")
-	b.WriteString(trailerSeq + ": " + strconv.Itoa(seq) + "\n")
-	if retracts != "" {
-		b.WriteString(trailerRetracts + ": " + sanitizeValue(retracts) + "\n")
+	b.WriteString(trailerKind + ": " + string(env.kind) + "\n")
+	b.WriteString(trailerSeq + ": " + strconv.Itoa(env.seq) + "\n")
+	if env.retracts != "" {
+		b.WriteString(trailerRetracts + ": " + sanitizeValue(env.retracts) + "\n")
 	}
-	if reason != "" {
-		b.WriteString(trailerReason + ": " + sanitizeValue(reason) + "\n")
+	if env.reason != "" {
+		b.WriteString(trailerReason + ": " + sanitizeValue(env.reason) + "\n")
+	}
+	if env.epoch > 0 {
+		b.WriteString(trailerEpoch + ": " + strconv.Itoa(env.epoch) + "\n")
+	}
+	if env.enc != "" {
+		b.WriteString(trailerEnc + ": " + sanitizeValue(env.enc) + "\n")
 	}
 	return b.String()
 }
 
+// BodyOpener 解密某个世代的密文。nil 表示只处理明文。
+type BodyOpener func(epoch int, ciphertext string) (string, error)
+
 // Decode 把 gitx 的原始提交翻译成领域消息。
 //
 // feedRef 决定归属 —— 撤回只对**同一条 feed** 里的消息生效（见 docs/DESIGN.md §6.1）。
-func Decode(raw []gitx.RawCommit, feedRef string) []Message {
+// open 为 nil 或解不开时，消息会被标记为 Locked：**密钥丢了不等于消息不存在**，
+// 链上的位置、作者、时间全都还在，只是正文不再可读。
+func Decode(raw []gitx.RawCommit, feedRef string, open BodyOpener) []Message {
 	out := make([]Message, 0, len(raw))
 	for _, r := range raw {
 		seq, _ := strconv.Atoi(r.Seq)
@@ -313,7 +382,9 @@ func Decode(raw []gitx.RawCommit, feedRef string) []Message {
 				kind = KindRetract
 			}
 		}
-		out = append(out, Message{
+		epoch, _ := strconv.Atoi(r.Epoch)
+
+		m := Message{
 			OID:      r.OID,
 			Seq:      seq,
 			Author:   r.Author,
@@ -324,10 +395,32 @@ func Decode(raw []gitx.RawCommit, feedRef string) []Message {
 			Kind:     kind,
 			Retracts: r.Retracts,
 			Reason:   r.Reason,
+			Epoch:    epoch,
 			At:       r.At,
-		})
+		}
+		if epoch > 0 {
+			plain, err := "", ErrNoKey
+			if open != nil {
+				plain, err = open(epoch, m.Body)
+			}
+			if err != nil {
+				m.Locked, m.Body = true, ""
+			} else {
+				m.Body = plain
+			}
+		}
+		out = append(out, m)
 	}
 	return out
+}
+
+// OpenBody 实现 BodyOpener：用本机保管的世代密钥解密。
+func (s *Store) OpenBody(epoch int, ciphertext string) (string, error) {
+	key, err := s.OpenEpoch(context.Background(), epoch)
+	if err != nil {
+		return "", err
+	}
+	return OpenBody(key, ciphertext)
 }
 
 // sigLabel 把 git 的签名状态翻成给人看的话。空串表示没签名。
