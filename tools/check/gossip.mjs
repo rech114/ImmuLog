@@ -50,7 +50,7 @@ async function waitFor(label, fn, timeout = 25000) {
 const snapshotOf = async (base) => (await fetch(base + '/api/snapshot')).json();
 
 export default async function gossip(browser, _base, c) {
-  const work = await mkdtemp(join(tmpdir(), 'immulog-gossip-'));
+  const work = await mkdtemp(join(tmpdir(), 'immulog-views-'));
   const bin = join(work, 'immulog');
   const hubA = join(work, 'hub-a.git');   // shared: alice, bob, carol
   const hubB = join(work, 'hub-b.git');   // shared: carol, dave
@@ -193,11 +193,15 @@ export default async function gossip(browser, _base, c) {
       rows: [...document.querySelectorAll('#peers .kv')].map((r) => r.textContent),
       missing: [...document.querySelectorAll('#missing-feeds .kv')].map((r) => r.textContent),
     }));
-    c.ok(panel.rows.filter((r) => r.includes('gossip')).length === 2,
-      'the peers tab shows both gossip peers, tagged apart from the git remote');
+    // Match the tag, not the substring: a git peer's row shows its URL, and a
+    // URL is allowed to contain the word "gossip".
+    const tagged = panel.rows.filter((r) => r.includes('· gossip'));
+    c.ok(tagged.length === 2,
+      'the peers tab shows both gossip peers, tagged apart from the git remote',
+      { panel });
     c.ok(panel.rows.some((r) => r.includes('agrees')), 'agreement is shown rather than assumed');
     c.ok(panel.missing.some((r) => r.includes('2 peers')),
-      'the feed only peers can see is listed with its reporter count');
+      'the feed only peers can see is listed with its reporter count', { panel });
 
     await shot(page, 'gossip-peers.png');
 

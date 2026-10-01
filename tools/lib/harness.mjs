@@ -77,12 +77,12 @@ export function collector(name) {
     results,
     issues,
     ok(cond, label, detail) {
-      results.push({ label, pass: !!cond });
-      if (!cond) {
-        failures += 1;
-        issues.push({ kind: 'assert', check: name, label, ...(detail ? { detail } : {}) });
-      }
-      return !!cond;
+      const pass = !!cond;
+      results.push({ label, pass });
+      // A failed assertion is already counted by `results`; incrementing a
+      // second counter here made one failure report as two.
+      if (!pass) issues.push({ kind: 'assert', check: name, label, ...(detail ? { detail } : {}) });
+      return pass;
     },
     // fail must count as a failure -- otherwise "the check crashed" is recorded
     // as a pass (a falsely green CI).

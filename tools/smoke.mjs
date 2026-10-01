@@ -120,7 +120,7 @@ headline('Scenario A - ?demo=1 simulated timeline -> rendering');
   // Gossip: the peer *view* comparison, kept apart from the git-sync picture
   const peerRows = [...one('#peers').children];
   ok(peerRows.length === 6, `git remotes and gossip peers share the panel (${peerRows.length} rows)`);
-  ok(peerRows.filter((r) => r.textContent.includes('gossip')).length === 3, 'gossip peers are tagged so the two pictures stay distinguishable');
+  ok(peerRows.filter((r) => r.textContent.includes('· gossip')).length === 3, 'gossip peers are tagged so the two pictures stay distinguishable');
   ok(peerRows.filter((r) => r.textContent.includes('differs')).length === 2, 'disagreement is marked on both a remote and a peer');
   ok(one('#snapshot').textContent !== '--', `the snapshot event carries the digest peers are compared against (${one('#snapshot').textContent})`);
 
