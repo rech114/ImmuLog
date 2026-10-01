@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// check/resilience.mjs —— 依赖挂掉时前端还活不活得下去。
+// check/resilience.mjs -- does the frontend survive its dependencies dying?
 //
-// 这个项目宣称「零依赖单二进制」，但那说的是后端。前端目前仍从 CDN 取
-// Beer CSS 和图标字体 —— 一旦取不到会怎样，必须实测，不能靠猜。
+// The project claims "zero-dependency single binary", but that is about the
+// backend. The frontend still pulls Beer CSS and the icon fonts from a CDN --
+// what happens when they are unreachable has to be measured, not guessed.
 
 import { VIEWPORTS, session } from '../lib/harness.mjs';
 
@@ -16,7 +17,7 @@ const countTimers = () => {
 };
 
 export default async function resilience(browser, base, c) {
-  // ① Beer 的 JS 挂掉 —— 检查我们的降级逻辑会不会变成无限轮询
+  // 1) Beer's JS is gone -- does our fallback degrade into an infinite poll?
   {
     const { ctx, page } = await session(browser, VIEWPORTS[0]);
     await page.addInitScript(countTimers);
@@ -24,26 +25,27 @@ export default async function resilience(browser, base, c) {
     await page.goto(`${base}/?demo=1`);
     await page.waitForSelector('.msg', { timeout: 25000 });
 
-    // 要证的不是"重试得少"，而是"重试会停"——取两个时间点对比
+    // The property to prove is not "retries few times" but "retries stop":
+    // sample at two points in time and compare
     await page.waitForTimeout(2500);
     const early = await page.evaluate(() => window.__t['120'] ?? 0);
     await page.waitForTimeout(3000);
     const late = await page.evaluate(() => window.__t['120'] ?? 0);
     const counts = await page.evaluate(() => window.__t);
 
-    c.ok(late === early, `Beer JS 不可用时有限重试后停止（2.5s=${early} 次 → 5.5s=${late} 次）`,
+    c.ok(late === early, `retries stop when Beer's JS is unavailable (2.5s=${early} -> 5.5s=${late})`,
       { early, late });
-    c.ok(late > 0 && late <= 20, `重试有上限且不是零次（${late}）`, { late, counts });
+    c.ok(late > 0 && late <= 20, `retries are bounded and non-zero (${late})`, { late, counts });
 
     const alive = await page.evaluate(() => ({
       msgs: document.querySelectorAll('.msg').length,
       hasInput: !!document.querySelector('#input'),
     }));
-    c.ok(alive.msgs > 0 && alive.hasInput, 'Beer JS 挂掉后核心功能仍在（消息仍上屏）', alive);
+    c.ok(alive.msgs > 0 && alive.hasInput, 'core functionality survives Beer JS dying (messages still render)', alive);
     await ctx.close();
   }
 
-  // ② Beer 的 CSS 挂掉 —— 应该只是丑，不该白屏
+  // 2) Beer's CSS is gone -- that should be ugly, not a blank screen
   {
     const { ctx, page } = await session(browser, VIEWPORTS[0]);
     await page.route('**/beer.min.css', (r) => r.abort());
@@ -51,18 +53,18 @@ export default async function resilience(browser, base, c) {
     await page.waitForSelector('.msg', { timeout: 25000 });
     await page.waitForTimeout(1500);
     const n = await page.evaluate(() => document.querySelectorAll('.msg').length);
-    c.ok(n > 0, `Beer CSS 挂掉仍可用，不白屏（${n} 条消息）`, { msgs: n });
+    c.ok(n > 0, `still usable without Beer CSS, no blank screen (${n} messages)`, { msgs: n });
     await ctx.close();
   }
 
-  // ③ 写接口 500 —— 错误必须暴露给用户
+  // 3) the write endpoint returns 500 -- the error must reach the user
   {
     const { ctx, page } = await session(browser, VIEWPORTS[0]);
     await page.route('**/beer.min.js', (r) => r.abort());
     await page.route('**/api/commit', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"internal"}' }));
     await page.goto(`${base}/`);
     await page.waitForTimeout(600);
-    await page.fill('#input', '会失败的发送');
+    await page.fill('#input', 'a send that will fail');
     await page.click('#send');
     await page.waitForTimeout(900);
 
@@ -71,8 +73,8 @@ export default async function resilience(browser, base, c) {
       text: document.querySelector('#toast-text')?.textContent ?? '',
       unverified: document.querySelectorAll('.msg[data-state="unverified"]').length,
     }));
-    c.ok(s.toast, `写接口 500 时给出提示（"${s.text}"）`, s);
-    c.ok(s.unverified === 1, '失败的消息被标记为未验签，不冒充成功', s);
+    c.ok(s.toast, `a 500 from the write endpoint is surfaced ("${s.text}")`, s);
+    c.ok(s.unverified === 1, 'the failed message is marked unverified, not passed off as sent', s);
     await ctx.close();
   }
 }

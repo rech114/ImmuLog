@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// lib/harness.mjs —— 浏览器检查的公共部件：静态服务、视口常量、断言收集。
-// 只被 check/*.mjs 使用；不引入 @playwright/test。
+// lib/harness.mjs -- shared parts for the browser checks: static server,
+// viewport constants, assertion collector.
+// Used only by check/*.mjs; it does not pull in @playwright/test.
 
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -20,9 +21,9 @@ export const VIEWPORTS = [
 ];
 
 export const TABS = [
-  { id: 'chat', label: '消息' },
-  { id: 'integrity', label: '完整性' },
-  { id: 'peers', label: '对端' },
+  { id: 'chat', label: 'messages' },
+  { id: 'integrity', label: 'integrity' },
+  { id: 'peers', label: 'peers' },
 ];
 
 const MIME = {
@@ -33,7 +34,7 @@ const MIME = {
   '.json': 'application/json',
 };
 
-/** 极简静态服务。复用 node:http，不引依赖。routes 可挂额外端点（如 mock SSE）。 */
+/** A minimal static server on node:http, no dependencies. `routes` can mount extra endpoints (a mock SSE, say). */
 export async function serve(dir = WEB, routes = {}) {
   const hits = new Map();
   const server = createServer(async (req, res) => {
@@ -55,7 +56,7 @@ export async function serve(dir = WEB, routes = {}) {
   return { base: `http://127.0.0.1:${server.address().port}`, hits, close: () => server.close() };
 }
 
-/** 一个视口 + 一个页面。 */
+/** One viewport plus one page. */
 export async function session(browser, vp = VIEWPORTS[0]) {
   const ctx = await browser.newContext({
     viewport: { width: vp.width, height: vp.height },
@@ -66,7 +67,7 @@ export async function session(browser, vp = VIEWPORTS[0]) {
   return { ctx, page: await ctx.newPage() };
 }
 
-/** 断言收集器：每条都记 pass/fail，最后统一汇总。 */
+/** Assertion collector: records pass/fail per item and aggregates at the end. */
 export function collector(name) {
   const results = [];
   const issues = [];
@@ -83,7 +84,8 @@ export function collector(name) {
       }
       return !!cond;
     },
-    // fail 必须计入失败 —— 否则「检查崩了」会被当成通过（CI 假绿）。
+    // fail must count as a failure -- otherwise "the check crashed" is recorded
+    // as a pass (a falsely green CI).
     fail(kind, detail) {
       failures += 1;
       issues.push({ kind, check: name, ...detail });
@@ -93,7 +95,7 @@ export function collector(name) {
   };
 }
 
-/** 捕获页面级错误（JS 异常 / console.error），供各检查复用。 */
+/** Capture page-level errors (JS exceptions / console.error) for every check. */
 export function watchErrors(page, c, label) {
   page.on('pageerror', (e) => c.fail('page-error', { where: label, message: String(e).slice(0, 300) }));
   page.on('console', (m) => {
@@ -101,7 +103,7 @@ export function watchErrors(page, c, label) {
   });
 }
 
-/** 打开 demo 页面并等到时间线有内容。 */
+/** Open the demo page and wait until the timeline has content. */
 export async function openDemo(page, base, { waitMs = 6000 } = {}) {
   await page.goto(`${base}/?demo=1`, { waitUntil: 'load' });
   await page.waitForSelector('.msg', { timeout: 25000 });
@@ -110,9 +112,10 @@ export async function openDemo(page, base, { waitMs = 6000 } = {}) {
 
 export const shot = (page, file) => page.screenshot({ path: join(OUT, file), fullPage: true });
 
-// ── 真实节点（端到端用）────────────────────────────────────────────
+// ── Real nodes (used by the end-to-end checks) ──────────────────────
 //
-// 所有 git 调用都隔离到 /dev/null 配置，绝不碰开发机环境。
+// Every git call is isolated to /dev/null config; the development machine's
+// environment is never touched.
 
 export const GIT_ENV = {
   ...process.env,
@@ -124,14 +127,14 @@ export const GIT_ENV = {
   GIT_COMMITTER_EMAIL: 'harness@example.com',
 };
 
-/** 直接在测试里跑 git —— 生产代码禁止 os/exec，测试不受此限。 */
+/** Run git directly from a test -- production code forbids os/exec, tests do not. */
 export const git = (dir, ...args) =>
   execFileSync('git', ['-C', dir, ...args], { env: GIT_ENV, encoding: 'utf8' }).trim();
 
 export const gitIn = (dir, input, ...args) =>
   execFileSync('git', ['-C', dir, ...args], { env: GIT_ENV, input, encoding: 'utf8' }).trim();
 
-/** 要一个空闲端口。 */
+/** Ask the OS for a free port. */
 export async function freePort() {
   const { createServer } = await import('node:net');
   return new Promise((resolve, reject) => {
@@ -144,12 +147,12 @@ export async function freePort() {
   });
 }
 
-/** 构建真实二进制；失败时抛出带 stderr 的错误。 */
+/** Build the real binary; throws with stderr attached on failure. */
 export function buildBinary(outPath) {
   execFileSync('go', ['build', '-o', outPath, '.'], { cwd: ROOT, stdio: 'pipe' });
 }
 
-/** 建一个 bare 仓库并配好身份 —— 服务端只读 git 配置，不吃环境变量。 */
+/** Create a bare repo with an identity -- the server reads git config, not environment variables. */
 export function initRepo(dir, who) {
   mkdirSync(dir, { recursive: true });
   git(dir, 'init', '--bare', '--quiet', '-b', 'main');
@@ -157,7 +160,7 @@ export function initRepo(dir, who) {
   git(dir, 'config', 'user.email', `${who}@example.com`);
 }
 
-/** 起一个节点进程，返回句柄。 */
+/** Start a node process and return a handle. */
 export function startNode({ bin, repo, port, remotes = [], env = {}, who = 'node' }) {
   const proc = spawn(bin, [], {
     env: {
@@ -191,25 +194,25 @@ export async function waitHealthy(base, ms = 30000) {
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error(`服务未在 ${ms}ms 内就绪：${last}`);
+  throw new Error(`service not ready within ${ms}ms: ${last}`);
 }
 
 export function stopNode(node) {
   try {
     node?.proc?.kill('SIGTERM');
     node?.proc?.kill('SIGKILL');
-  } catch { /* 已经退了 */ }
+  } catch { /* already gone */ }
 }
 
 /**
- * 让 hub 拿到 src 的 feed。
+ * Make the hub carry src's feeds.
  *
- * 走 fetch 而不是 push：本机 sandbox 的 receive-pack 不可用（见 README
- * 「已知的本机环境限制」）。
+ * This fetches rather than pushes: the local sandbox's receive-pack is unusable
+ * (see the README's "known local environment limits").
  *
- * ⚠️ 在 CI 上节点自己的 `pushLoop` 是**能工作**的，于是它会和这里同时写
- * hub 的同一个 ref —— git 会报 "cannot lock ref ... but expected"。这是正常
- * 的写竞争，不是错误：等它写完重试即可。
+ * On CI the node's own `pushLoop` DOES work, so it writes the same hub ref
+ * concurrently and git reports "cannot lock ref ... but expected". That is an
+ * ordinary write race, not an error: wait for it and retry.
  */
 export function publish(hubDir, srcDir, tries = 6) {
   for (let i = 0; i < tries; i += 1) {
@@ -222,11 +225,11 @@ export function publish(hubDir, srcDir, tries = 6) {
       sleepSync(200);
     }
   }
-  // 最后一次不复用 catch，让调用方看见真实的错误
+  // The last attempt does not catch, so the caller sees the real error
   git(hubDir, 'fetch', '--quiet', srcDir, '+refs/feeds/*:refs/feeds/*');
 }
 
-/** execFileSync 是同步的，所以这里也要同步地等。 */
-function sleepSync(ms) {
+/** execFileSync is synchronous, so waiting here has to be synchronous too. */
+export function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

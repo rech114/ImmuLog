@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// check/layout.mjs —— 几何实测：横向溢出、越界裁剪、内容贴边、触摸目标。
-// 直接冲着「安全区 / 碰到边界 / 移动端适配」这个问题写的。
+// check/layout.mjs -- measured geometry: horizontal overflow, clipping,
+// content flush to the edges, touch targets.
+// Written directly against the "safe area / hitting the edges / mobile fit" problem.
 
 import { VIEWPORTS, TABS, session, openDemo, shot } from '../lib/harness.mjs';
 
@@ -42,7 +43,7 @@ export default async function layout(browser, base, c) {
       await shot(page, `${vp.name}-${tab.id}.png`);
       const where = { vp: vp.name, tab: tab.id };
 
-      c.ok(m.docW - m.vw <= 1, `[${vp.name}/${tab.id}] 无横向溢出 (docW=${m.docW} vw=${m.vw})`,
+      c.ok(m.docW - m.vw <= 1, `[${vp.name}/${tab.id}] no horizontal overflow (docW=${m.docW} vw=${m.vw})`,
         { ...where, overflow: m.docW - m.vw });
 
       for (const el of m.els) {
@@ -57,7 +58,8 @@ export default async function layout(browser, base, c) {
       }
     }
 
-    // Beer 的全局兄弟间距规则曾把 <p> 顶开 1rem，这里加回归护栏
+    // Beer's global sibling-spacing rule once pushed <p> apart by 1rem; this
+    // is the regression guard
     await page.click('#views button[data-view="integrity"]');
     await page.waitForTimeout(400);
     const gaps = await page.evaluate(() => {
@@ -70,12 +72,13 @@ export default async function layout(browser, base, c) {
       }
       return out;
     });
-    c.ok(gaps.length > 0, `[${vp.name}] 完整性页有可测的键值行 (${gaps.length} 行)`);
+    c.ok(gaps.length > 0, `[${vp.name}] the integrity panel has measurable key/value rows (${gaps.length})`);
     const maxGap = gaps.length ? Math.max(...gaps) : 0;
-    c.ok(maxGap <= 6, `[${vp.name}] 键值行标题↔副标题紧凑（最大 ${maxGap}px）`,
+    c.ok(maxGap <= 6, `[${vp.name}] key/value heading and subtitle are tight (max ${maxGap}px)`,
       { vp: vp.name, gaps, maxGap });
 
-    // .kv 必须是横向 flex——它是完整性页的整页骨架
+    // .kv must be a horizontal flex container -- it is the whole skeleton of
+    // the integrity panel
     const kv = await page.evaluate(() => {
       const el = document.querySelector('.kv');
       if (!el) return null;
@@ -84,9 +87,9 @@ export default async function layout(browser, base, c) {
       return { display: cs.display, dir: cs.flexDirection, w: +r.width.toFixed(1), h: +r.height.toFixed(1) };
     });
     c.ok(kv && kv.display === 'flex',
-      `[${vp.name}] .kv 是 flex 容器（display=${kv?.display} ${kv?.dir}）`, { vp: vp.name, kv });
+      `[${vp.name}] .kv is a flex container (display=${kv?.display} ${kv?.dir})`, { vp: vp.name, kv });
 
-    // 图标/标题/数值必须处在同一行：三者纵向重叠
+    // Icon, heading and value must sit on one row: all three overlap vertically
     const sameRow = await page.evaluate(() => {
       const el = document.querySelector('.kv');
       if (!el) return null;
@@ -102,16 +105,16 @@ export default async function layout(browser, base, c) {
       return { rows: rows.size, spread, h: +el.getBoundingClientRect().height.toFixed(1) };
     });
     c.ok(sameRow && sameRow.rows === 1,
-      `[${vp.name}] 图标/标题/数值在同一行（纵向跨 ${sameRow?.spread}px）`, { vp: vp.name, sameRow });
+      `[${vp.name}] icon, heading and value share a row (vertical spread ${sameRow?.spread}px)`, { vp: vp.name, sameRow });
 
-    // 安全区：确认左右真的留了边距
+    // Safe area: confirm the left and right margins really exist
     const pad = await page.evaluate(() => ({
       bar: getComputedStyle(document.querySelector('#bar > nav')).paddingLeft,
       dock: getComputedStyle(document.querySelector('#dock > nav')).paddingRight,
       wrap: getComputedStyle(document.querySelector('.wrap')).paddingLeft,
     }));
     const min = Math.min(parseFloat(pad.bar), parseFloat(pad.dock), parseFloat(pad.wrap));
-    c.ok(min >= 8, `[${vp.name}] 具备左右安全边距 (bar=${pad.bar} dock=${pad.dock} wrap=${pad.wrap})`,
+    c.ok(min >= 8, `[${vp.name}] has left/right safe margins (bar=${pad.bar} dock=${pad.dock} wrap=${pad.wrap})`,
       { vp: vp.name, pad, min });
 
     await ctx.close();
