@@ -69,6 +69,35 @@ main {
   margin: 0 auto;
 }
 
+/* ── 间距 ─────────────────────────────────────────────────────────
+   Beer 有一条特异性 (0,4,1) 的全局规则：
+
+     :not(.grid,nav,.row) > :not(progress.max)
+       + :is(…,p,…):not([class*=margin]) { margin-block-start: 1rem }
+
+   它会给**任何跟在兄弟元素后面的 <p>** 顶开 16px —— 单靠 `.kv p`
+   这种 (0,1,1) 的规则压不住，副标题会被推得离标题老远。
+
+   解法是用它自己留的逃生口 [class*=margin]：给每个 <p> 加上 no-margin
+   助手。**新增 <p> 时务必带上 no-margin**，然后由下面这些规则显式控距。
+   ──────────────────────────────────────────────────────────────── */
+
+p.no-margin {
+  margin-block-start: 0;
+}
+
+.alarm p {
+  margin: .3rem 0 0;
+}
+
+.alarm p.mono {
+  margin-top: .55rem;
+}
+
+.empty {
+  margin: 0;
+}
+
 #dock {
   flex: none;
   padding-bottom: var(--pad-b);

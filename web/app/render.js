@@ -88,7 +88,7 @@ function messageEl(it) {
         <span class="who"></span>
         <button class="meta" aria-expanded="false"></button>
       </div>
-      <p class="text"></p>
+      <p class="text no-margin"></p>
       <span class="strike-note"></span>
       <div class="detail"></div>
     </div>`;
@@ -127,11 +127,11 @@ function alarmEl(it) {
   h.textContent = it.title || '历史被改写'; // 服务端来的字符串一律 textContent
 
   const p = document.createElement('p');
-  p.className = 'small-text';
+  p.className = 'small-text no-margin';
   p.textContent = it.detail || '';
 
   const m = document.createElement('p');
-  m.className = 'mono muted';
+  m.className = 'mono muted no-margin';
   m.textContent = `本地 ${it.local || '——'} · 远端 ${it.remote || '——'}`;
 
   const nav = document.createElement('nav');
@@ -164,7 +164,7 @@ function evidenceEl(it) {
   const strong = document.createElement('strong');
   strong.textContent = it.title || '历史被改写';
   const mono = document.createElement('p');
-  mono.className = 'mono muted';
+  mono.className = 'mono muted no-margin';
   mono.textContent = `${it.local || ''} → ${it.remote || ''}`;
   box.append(strong, mono);
 
@@ -195,7 +195,7 @@ export function meta(s) {
       const name = document.createElement('strong');
       name.textContent = p.name ?? '';
       const url = document.createElement('p');
-      url.className = 'small-text muted';
+      url.className = 'small-text muted no-margin';
       url.textContent = p.url ?? '';
       box.append(name, url);
 

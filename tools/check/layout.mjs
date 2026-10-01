@@ -56,6 +56,24 @@ export default async function layout(browser, base, c) {
       }
     }
 
+    // Beer 的全局兄弟间距规则曾把 <p> 顶开 1rem，这里加回归护栏
+    await page.click('#views button[data-view="integrity"]');
+    await page.waitForTimeout(400);
+    const gaps = await page.evaluate(() => {
+      const out = [];
+      for (const kv of document.querySelectorAll('.kv')) {
+        const s = kv.querySelector('strong');
+        const p = kv.querySelector('p');
+        if (!s || !p) continue;
+        out.push(+(p.getBoundingClientRect().top - s.getBoundingClientRect().bottom).toFixed(1));
+      }
+      return out;
+    });
+    c.ok(gaps.length > 0, `[${vp.name}] 完整性页有可测的键值行 (${gaps.length} 行)`);
+    const maxGap = gaps.length ? Math.max(...gaps) : 0;
+    c.ok(maxGap <= 6, `[${vp.name}] 键值行标题↔副标题紧凑（最大 ${maxGap}px）`,
+      { vp: vp.name, gaps, maxGap });
+
     // 安全区：确认左右真的留了边距
     const pad = await page.evaluate(() => ({
       bar: getComputedStyle(document.querySelector('#bar > nav')).paddingLeft,
