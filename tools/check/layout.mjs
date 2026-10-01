@@ -74,6 +74,35 @@ export default async function layout(browser, base, c) {
     c.ok(maxGap <= 6, `[${vp.name}] 键值行标题↔副标题紧凑（最大 ${maxGap}px）`,
       { vp: vp.name, gaps, maxGap });
 
+    // .kv 必须是横向 flex——它是完整性页的整页骨架
+    const kv = await page.evaluate(() => {
+      const el = document.querySelector('.kv');
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return { display: cs.display, dir: cs.flexDirection, w: +r.width.toFixed(1), h: +r.height.toFixed(1) };
+    });
+    c.ok(kv && kv.display === 'flex',
+      `[${vp.name}] .kv 是 flex 容器（display=${kv?.display} ${kv?.dir}）`, { vp: vp.name, kv });
+
+    // 图标/标题/数值必须处在同一行：三者纵向重叠
+    const sameRow = await page.evaluate(() => {
+      const el = document.querySelector('.kv');
+      if (!el) return null;
+      const icon = el.querySelector('i');
+      const strong = el.querySelector('strong');
+      const val = el.querySelector('.chip');
+      const rects = [icon, strong, val].filter(Boolean).map((n) => n.getBoundingClientRect());
+      if (rects.length < 2) return null;
+      const rows = new Set(rects.map((r) => Math.round(r.top / 10)));
+      const minTop = Math.min(...rects.map((r) => r.top));
+      const maxBottom = Math.max(...rects.map((r) => r.bottom));
+      const spread = +(maxBottom - minTop).toFixed(1);
+      return { rows: rows.size, spread, h: +el.getBoundingClientRect().height.toFixed(1) };
+    });
+    c.ok(sameRow && sameRow.rows === 1,
+      `[${vp.name}] 图标/标题/数值在同一行（纵向跨 ${sameRow?.spread}px）`, { vp: vp.name, sameRow });
+
     // 安全区：确认左右真的留了边距
     const pad = await page.evaluate(() => ({
       bar: getComputedStyle(document.querySelector('#bar > nav')).paddingLeft,

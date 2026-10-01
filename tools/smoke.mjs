@@ -213,6 +213,49 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
   ok(one('#toast-text').textContent.includes('cas_failed'), `提示文案含错误码（${one('#toast-text').textContent}）`);
 }
 
+// ── 样式表完整性：CSS 没有 // 注释，一行误写会静默吃掉后面整条规则 ──
+{
+  const { readFile } = await import('node:fs/promises');
+  const { JSDOM } = await import('jsdom');
+  const path = new URL('../web/style.css', import.meta.url);
+  const css = await readFile(path, 'utf8');
+
+  const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>');
+  const style = dom.window.document.createElement('style');
+  style.textContent = css;
+  dom.window.document.head.appendChild(style);
+  const selectors = [...dom.window.document.styleSheets[0].cssRules]
+    .map((r) => r.selectorText)
+    .filter(Boolean);
+
+  // ① 花括号平衡
+  let depth = 0;
+  for (const ch of css) {
+    if (ch === '{') depth++;
+    if (ch === '}') depth--;
+    if (depth < 0) break;
+  }
+  ok(depth === 0, `style.css 花括号平衡 (depth=${depth})`);
+
+  // ② 没有选择器被 // 污染（CSS 不支持 // 注释）
+  const polluted = selectors.filter((s) => s.includes('//'));
+  ok(polluted.length === 0, `没有选择器被 // 注释污染 (${polluted.length} 条)`,
+    { polluted: polluted.slice(0, 3) });
+
+  // ③ 关键规则必须真的在表里——写错一个字就会整条消失
+  const critical = [
+    '.kv', '.kv>i', '.kv strong', '.kv p',
+    '.msg', '.msg .text', '.alarm', '.shape',
+    '[data-state="verified"]', 'p.no-margin',
+  ];
+  const missing = critical.filter((want) => !selectors.some((s) => s.replace(/\s+/g, '').includes(want.replace(/\s+/g, ''))));
+  ok(missing.length === 0, `关键规则全部解析成功 (${selectors.length} 条规则)`, { missing });
+
+  // ④ .kv 必须是横向 flex——它决定完整性页的整页骨架
+  const kv = selectors.find((s) => s === '.kv');
+  ok(kv === '.kv', '.kv 规则的选择器干净（未被前一行吃掉）', { found: kv });
+}
+
 // ── 结果 ──────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(52)}`);

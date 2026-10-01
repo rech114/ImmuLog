@@ -1,0 +1,11 @@
+import { readFile } from 'node:fs/promises';
+import { JSDOM } from 'jsdom';
+const css = await readFile('../web/style.css', 'utf8');
+const dom = new JSDOM('<html><head></head><body></body></html>');
+const s = dom.window.document.createElement('style');
+s.textContent = css;
+dom.window.document.head.appendChild(s);
+const rules = [...dom.window.document.styleSheets[0].cssRules];
+rules.forEach((r, i) => console.log(`${String(i).padStart(3)}  ${r.selectorText ?? '(@' + r.type + ')'}`));
+console.log('\n源码里含 "kv" 的行:');
+css.split('\n').forEach((l, i) => { if (l.includes('.kv')) console.log(`${String(i + 1).padStart(4)}  ${l}`); });
