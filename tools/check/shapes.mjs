@@ -1,13 +1,13 @@
-// check/shapes.mjs —— 验证「形状即状态」真的渲染出来了。
+// check/shapes.mjs —— 视觉语汇真的渲染出来了吗。
 //
-// Beer CSS 的 shape 是 mask-image: url(x.svg)。若 SVG 取不到，
-// 元素会退化成一个纯色方块 —— 整个形状语汇就静默失效了。
-// 这一步专门盯住它。
+// 两件事都容易静默失效：
+//   · shape 是 mask-image: url(x.svg) —— SVG 取不到就退化成纯色方块
+//   · 图标是 Material Symbols 连字字体 —— 字体没加载就会显示成 "cloud_done" 这串字
+// 失效了页面不会报错，只会变丑。所以必须实测。
 
-import { VIEWPORTS, collector, session, openDemo, shot } from '../lib/harness.mjs';
+import { VIEWPORTS, session, openDemo, shot } from '../lib/harness.mjs';
 
-// 消息状态的形状必须两两不同，且指向真实存在的 SVG
-const EXPECT = {
+const EXPECT_SHAPE = {
   verified: 'gem.svg',
   retracted: 'slanted.svg',
   alarm: 'burst.svg',
@@ -24,67 +24,112 @@ export default async function shapes(browser, base, c) {
     webkitMask: CSS.supports('-webkit-mask-image', 'url(x.svg)'),
     safeArea: CSS.supports('padding-left', 'max(8px, env(safe-area-inset-left))'),
     viewportFit: document.querySelector('meta[name=viewport]')?.content.includes('viewport-fit=cover') ?? false,
+    iconFont: document.fonts.check('24px "Material Symbols Outlined"'),
   }));
-  c.ok(cap.mask || cap.webkitMask, `浏览器支持 mask-image (标准=${cap.mask} webkit=${cap.webkitMask})`);
-  c.ok(cap.safeArea, '支持 max() + env() 的安全区写法');
+  c.ok(cap.mask || cap.webkitMask, `支持 mask-image (标准=${cap.mask} webkit=${cap.webkitMask})`);
+  c.ok(cap.safeArea, '支持 max() + env() 安全区写法');
   c.ok(cap.viewportFit, 'viewport meta 含 viewport-fit=cover', cap);
+  c.ok(cap.iconFont, '图标字体已加载', cap);
 
-  // ② 每种状态的实际计算值
-  const actual = await page.evaluate(() => {
-    const seen = {};
-    for (const el of document.querySelectorAll('.shape')) {
-      const state = el.dataset.state || (el.className.match(/shape (\S+)/)?.[1] ?? '');
-      const cs = getComputedStyle(el);
-      const mask = cs.maskImage || cs.webkitMaskImage || 'none';
-      const r = el.getBoundingClientRect();
-      (seen[state] ??= []).push({
-        mask, bg: cs.backgroundColor,
-        w: +r.width.toFixed(1), h: +r.height.toFixed(1),
-        cls: el.className,
-      });
-    }
-    return seen;
-  });
-
-  const states = Object.keys(actual);
-  c.ok(states.length >= 3, `页面上出现 ${states.length} 种形状状态：${states.join(', ')}`, { states });
-
+  // ② 逐页签采集形状与图标（隐藏视图里的元素量不到，必须切过去）
+  const shapesByState = {};
+  const icons = [];
   const urls = new Set();
-  for (const [state, list] of Object.entries(actual)) {
+
+  for (const tab of ['chat', 'integrity', 'peers']) {
+    await page.click(`#views button[data-view="${tab}"]`);
+    await page.waitForTimeout(400);
+
+    const got = await page.evaluate(() => {
+      const shapes = [];
+      const icons = [];
+      for (const el of document.querySelectorAll('.shape')) {
+        const r = el.getBoundingClientRect();
+        if (!r.width && !r.height) continue;         // 隐藏视图，跳过
+        const cs = getComputedStyle(el);
+        shapes.push({
+          state: el.dataset.state || (el.className.match(/shape (\S+)/)?.[1] ?? ''),
+          mask: cs.maskImage || cs.webkitMaskImage || 'none',
+          bg: cs.backgroundColor,
+          w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+        });
+      }
+      for (const el of document.querySelectorAll('i')) {
+        const r = el.getBoundingClientRect();
+        if (!r.width && !r.height) continue;
+        const cs = getComputedStyle(el);
+        const fs = parseFloat(cs.fontSize);
+        icons.push({
+          name: (el.textContent || '').trim(),
+          family: cs.fontFamily,
+          fontSize: fs,
+          w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+          // 连字没生效时，"cloud_done" 会被排成一行文字，宽度远超字号
+          looksLikeText: r.width > fs * 1.9,
+        });
+      }
+      return { shapes, icons };
+    });
+
+    for (const s of got.shapes) (shapesByState[s.state] ??= []).push(s);
+    icons.push(...got.icons);
+  }
+
+  await shot(page, 'shapes-integrity.png');
+
+  // ③ 形状
+  c.ok(Object.keys(shapesByState).length >= 3,
+    `出现 ${Object.keys(shapesByState).length} 种形状状态：${Object.keys(shapesByState).join(', ')}`,
+    { states: Object.keys(shapesByState) });
+
+  for (const [state, list] of Object.entries(shapesByState)) {
     const masks = new Set(list.map((x) => x.mask));
-    c.ok(masks.size === 1, `状态 "${state}" 的形状唯一（${list.length} 个元素共 ${masks.size} 种 mask）`, { state, masks: [...masks] });
+    c.ok(masks.size === 1, `状态 "${state}" 形状唯一（${list.length} 元素 / ${masks.size} 种 mask）`,
+      { state, masks: [...masks] });
 
     const mask = list[0].mask;
-    c.ok(mask !== 'none' && !mask.includes('none'), `状态 "${state}" 有 mask（${mask.slice(0, 70)}…）`, { state, mask });
-    if (EXPECT[state]) {
-      c.ok(mask.includes(EXPECT[state]), `状态 "${state}" → ${EXPECT[state]}`, { state, mask, expect: EXPECT[state] });
+    c.ok(mask !== 'none', `状态 "${state}" 有 mask`, { state, mask });
+    if (EXPECT_SHAPE[state]) {
+      c.ok(mask.includes(EXPECT_SHAPE[state]), `状态 "${state}" → ${EXPECT_SHAPE[state]}`,
+        { state, mask, expect: EXPECT_SHAPE[state] });
     }
+    c.ok(list[0].w > 0 && list[0].w <= 40, `状态 "${state}" 尺寸合理 (${list[0].w}×${list[0].h})`,
+      { state, ...list[0] });
+
     for (const m of masks) {
       const u = m.match(/url\(["']?([^"')]+)["']?\)/)?.[1];
       if (u) urls.add(u);
     }
-    // 尺寸合理：图标不该是 Beer 默认的 3.5rem
-    c.ok(list[0].w > 0 && list[0].w <= 40, `状态 "${state}" 尺寸合理 (${list[0].w}×${list[0].h})`, { state, ...list[0] });
   }
 
-  // ③ 形状 SVG 真的可达（这就是静默失效点）
   for (const u of urls) {
     try {
-      const r = await fetch(u, { method: 'GET' });
+      const r = await fetch(u);
       c.ok(r.ok, `形状 SVG 可达 ${u.split('/').pop()} (HTTP ${r.status})`, { url: u, status: r.status });
     } catch (e) {
       c.ok(false, `形状 SVG 可达 ${u}`, { url: u, error: String(e).slice(0, 120) });
     }
   }
 
-  // ④ 同一状态下不同元素颜色一致（撤回/告警应为 error 色）
-  const retracted = actual.retracted?.[0];
-  const verified = actual.verified?.[0];
+  const retracted = shapesByState.retracted?.[0];
+  const verified = shapesByState.verified?.[0];
   if (retracted && verified) {
     c.ok(retracted.bg !== verified.bg, `撤回与已验签颜色不同 (${retracted.bg} vs ${verified.bg})`,
       { retracted: retracted.bg, verified: verified.bg });
   }
 
-  await shot(page, 'shapes-zoom.png');
+  // ④ 图标
+  const uniqIcons = [...new Map(icons.map((i) => [i.name, i])).values()];
+  c.ok(uniqIcons.length > 0, `找到 ${uniqIcons.length} 个图标：${uniqIcons.map((i) => i.name).join(', ')}`);
+  const asText = icons.filter((i) => i.looksLikeText);
+  c.ok(asText.length === 0, '所有图标都渲染成字形，没有退化成文字', { asText });
+  for (const i of uniqIcons) {
+    c.ok(
+      i.family.includes('Material Symbols'),
+      `图标 "${i.name}" 使用 Material Symbols 字体（${i.family.split(',')[0]}）`,
+      { icon: i },
+    );
+  }
+
   await ctx.close();
 }

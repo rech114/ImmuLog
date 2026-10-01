@@ -1,14 +1,22 @@
 /* ── Immutalk · MD3 Expressive 皮肤 ────────────────────────────────
    只做三件事：补 Beer CSS 没有的布局与形状语汇、motion、字体。
-   其余（色板、组件、helper）全部复用 Beer CSS。
+   色板、组件、helper 全部复用 Beer CSS。
    ──────────────────────────────────────────────────────────────── */
 
 :root {
   --spring: cubic-bezier(.2, .9, .25, 1.12);
   --spring-soft: cubic-bezier(.2, .85, .3, 1.04);
-  --rail: 76px;
-  --dock: 88px;
+  --gutter: 16px;
+  --pad-l: max(var(--gutter), env(safe-area-inset-left));
+  --pad-r: max(var(--gutter), env(safe-area-inset-right));
+  --pad-t: max(8px, env(safe-area-inset-top));
+  --pad-b: max(8px, env(safe-area-inset-bottom));
 }
+
+/* ── App shell ──────────────────────────────────────────────────
+   不用 position:fixed。改成 flex 三段式，header/footer 正常占位——
+   于是没有 padding 补偿、没有重叠、没有空隙，安全区也自然生效。
+   ──────────────────────────────────────────────────────────────── */
 
 html,
 body {
@@ -17,20 +25,74 @@ body {
 }
 
 body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
   font-family: "Roboto Flex", system-ui, sans-serif;
   font-optical-sizing: auto;
 }
+
+#bar {
+  flex: none;
+  padding-top: var(--pad-t);
+  background: color-mix(in srgb, var(--surface, #131315) 88%, transparent);
+  backdrop-filter: blur(20px) saturate(160%);
+  border-bottom: 1px solid color-mix(in srgb, var(--on-surface, #fff) 8%, transparent);
+}
+
+#bar>nav.toolbar {
+  padding-inline: var(--pad-l) var(--pad-r);
+}
+
+#bar>nav.group {
+  padding-inline: var(--pad-l) var(--pad-r);
+  margin: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#bar>nav.group::-webkit-scrollbar {
+  display: none;
+}
+
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.wrap {
+  padding: 8px var(--pad-r) 16px var(--pad-l);
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+#dock {
+  flex: none;
+  padding-bottom: var(--pad-b);
+  background: color-mix(in srgb, var(--surface, #131315) 88%, transparent);
+  backdrop-filter: blur(20px) saturate(160%);
+  border-top: 1px solid color-mix(in srgb, var(--on-surface, #fff) 8%, transparent);
+}
+
+#dock>nav.toolbar {
+  padding-inline: var(--pad-l) var(--pad-r);
+}
+
+/* ── 品牌与图标 ───────────────────────────────────────────────── */
 
 .brand {
   font-family: "Bricolage Grotesque", sans-serif;
   font-variation-settings: "opsz" 32, "wdth" 88, "wght" 620;
   letter-spacing: -.02em;
   margin: 0 .25rem 0 .5rem;
+  font-size: 1.25rem;
 }
 
 .mono {
   font-family: "Martian Mono", ui-monospace, monospace;
-  font-variation-settings: "wght" 400;
   font-size: .68rem;
   letter-spacing: -.03em;
 }
@@ -40,37 +102,46 @@ body {
   margin: 0;
 }
 
-/* ── 布局 ─────────────────────────────────────────────────────── */
-
-header.fixed {
-  padding: .5rem 0 .25rem;
-  background: color-mix(in srgb, var(--surface, #131315) 82%, transparent);
-  backdrop-filter: blur(20px) saturate(160%);
-  border-bottom: 1px solid color-mix(in srgb, var(--on-surface, #fff) 8%, transparent);
+.link-icon {
+  font-size: 20px;
+  line-height: 1;
+  margin-right: .25rem;
+  color: var(--primary);
+  transition: color .3s ease;
 }
 
-main {
-  padding-top: calc(var(--rail) + 6px);
-  padding-bottom: calc(var(--dock) + 14px);
+.link-icon[data-state="down"] {
+  color: var(--error);
 }
 
-footer.fixed {
-  padding: .5rem 0 .9rem;
-  background: color-mix(in srgb, var(--surface, #131315) 82%, transparent);
-  backdrop-filter: blur(20px) saturate(160%);
+h5>i,
+h6>i,
+.section-head>i {
+  font-size: 1.05em;
+  vertical-align: -.15em;
+  margin-right: .3rem;
 }
 
-.view {
-  display: none;
+/* 完整性页的键值行 */
+.kv {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .35rem 0;
 }
 
-.view.active {
-  display: block;
-  animation: settle .34s var(--spring-soft) both;
+.kv>i {
+  flex: none;
+  font-size: 22px;
 }
 
-#views button {
-  font-variation-settings: "wght" 480;
+.kv>.max,
+.row>.max {
+  min-width: 0;
+}
+
+#peers .kv {
+  padding: .5rem 0;
 }
 
 /* ── 形状语汇：状态即形状 + 状态即颜色 ───────────────────────── */
@@ -113,12 +184,11 @@ footer.fixed {
   }
 }
 
-/* 撤回落定时，形状"转"一下——读作状态迁移，不是装饰 */
-.shape[data-state="retracted"] {
+.swap[data-state="retracted"] {
   animation: cut .46s var(--spring) both;
 }
 
-.shape[data-state="alarm"] {
+.swap[data-state="alarm"] {
   animation: burst .6s var(--spring) both;
 }
 
@@ -142,7 +212,7 @@ footer.fixed {
   }
 
   30% {
-    transform: scale(1.5) rotate(12deg);
+    transform: scale(1.45) rotate(12deg);
   }
 
   100% {
@@ -174,12 +244,28 @@ footer.fixed {
   }
 }
 
+/* ── 视图切换 ─────────────────────────────────────────────────── */
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+  animation: settle .34s var(--spring-soft) both;
+}
+
+#views button {
+  font-variation-settings: "wght" 480;
+  flex: none;
+}
+
 /* ── 消息 ─────────────────────────────────────────────────────── */
 
 .msg {
   display: flex;
   gap: .75rem;
-  padding: .7rem .9rem;
+  padding: .7rem .85rem;
   border-radius: 20px;
   animation: rise .44s var(--spring) both;
   transition: background .25s ease;
@@ -187,16 +273,6 @@ footer.fixed {
 
 .msg:hover {
   background: color-mix(in srgb, var(--on-surface, #fff) 5%, transparent);
-}
-
-.msg>.max,
-.alarm>.max {
-  min-width: 0;
-}
-
-.msg>.max>.row {
-  align-items: baseline;
-  gap: .5rem;
 }
 
 .msg .who {
@@ -208,8 +284,15 @@ footer.fixed {
   font-family: "Martian Mono", monospace;
   font-size: .62rem;
   color: var(--on-surface-variant, #b9b9bd);
-  opacity: .7;
   cursor: pointer;
+  background: none;
+  border: 0;
+  padding: .15rem .3rem;
+  border-radius: 8px;
+}
+
+.msg .meta:hover {
+  background: color-mix(in srgb, var(--on-surface, #fff) 8%, transparent);
 }
 
 .msg .text {
@@ -236,28 +319,28 @@ footer.fixed {
   animation: settle .22s var(--spring-soft) both;
 }
 
-/* 撤回：不消失，留痕 */
+/* 撤回：不消失，留痕。对比度必须够——不能靠降低不透明度表达"失效" */
 .msg[data-state="retracted"] .text {
   text-decoration: line-through;
   text-decoration-thickness: 2px;
-  text-decoration-color: color-mix(in srgb, var(--error, #ffb4ab) 70%, transparent);
-  opacity: .45;
-}
-
-.msg[data-state="retracted"] .strike-note {
-  display: inline;
+  text-decoration-color: var(--error);
+  color: var(--on-surface-variant, #b9b9bd);
 }
 
 .strike-note {
-  display: none;
-  margin-left: .4rem;
-  font-size: .72rem;
-  color: var(--error, #ffb4ab);
+  display: block;
+  margin-top: .25rem;
+  font-size: .75rem;
+  color: var(--error);
+  text-decoration: none;
 }
 
-/* 乐观投递中 */
+.msg .strike-note:empty {
+  display: none;
+}
+
 .msg[data-state="pending"] {
-  opacity: .55;
+  opacity: .6;
 }
 
 /* ── 告警：时间线里的封条，不是 toast ─────────────────────────── */
@@ -269,13 +352,13 @@ footer.fixed {
   padding: .85rem 1rem;
   border-radius: 24px;
   animation: rise .5s var(--spring) both;
-  background: color-mix(in srgb, var(--error, #ffb4ab) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--error, #ffb4ab) 42%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 42%, transparent);
 }
 
 .alarm h6 {
   margin: 0 0 .15rem;
-  color: var(--error, #ffb4ab);
+  color: var(--error);
   font-variation-settings: "wght" 600;
 }
 
@@ -283,30 +366,31 @@ footer.fixed {
   margin-top: .5rem;
 }
 
-/* ── 其他 ─────────────────────────────────────────────────────── */
-
-#link {
-  width: 20px;
-  height: 20px;
-  margin-right: .25rem;
-  transition: opacity .3s ease;
-}
-
-#link[data-state="down"] {
-  opacity: .35;
-}
-
-#peers .row,
-#alarm-log .row {
-  padding: .4rem 0;
-}
-
-#stream {
-  scroll-behavior: smooth;
-}
+/* ── 空态 ─────────────────────────────────────────────────────── */
 
 .empty {
-  padding: 2rem 1rem;
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .6rem;
+  padding: 3rem 1rem;
   color: var(--on-surface-variant, #b9b9bd);
+  font-size: .9rem;
+}
+
+.empty i {
+  font-size: 40px;
+  opacity: .75;
+}
+
+#stream:not(:empty)+.empty {
+  display: none;
+}
+
+#peers:not(:empty) {
+  padding-top: .25rem;
+}
+
+#alarm-log .kv {
+  padding: .45rem 0;
 }

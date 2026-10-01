@@ -4,9 +4,9 @@
   "type": "module",
   "description": "开发/CI 工具。不属于运行时；web/ 不引用这里，embed 出去的仍是零依赖前端。",
   "scripts": {
-    "smoke": "node smoke.mjs 2>&1 | tee smoke.log",
-    "visual": "node run.mjs 2>&1 | tee visual.log",
-    "ci": "npm run smoke && npm run visual"
+    "smoke": "node smoke.mjs",
+    "visual": "node run.mjs",
+    "ci": "node smoke.mjs && node run.mjs"
   },
   "devDependencies": {
     "axe-core": "^4.10.2",

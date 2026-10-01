@@ -4,8 +4,9 @@
 import { VIEWPORTS, TABS, session, openDemo, shot } from '../lib/harness.mjs';
 
 const CONTENT = [
-  '#mark', '.brand', '#room', '#theme', '#views', '#views button',
-  '#input', '#send', '.view.active article', '.msg', '.alarm',
+  '#mark', '.brand', '#room', '#theme', '#link',
+  '#views button', '#input', '#send',
+  '.view.active article', '.msg', '.alarm', '.kv', '.empty',
 ];
 
 const measure = (selectors) => {
@@ -56,14 +57,14 @@ export default async function layout(browser, base, c) {
     }
 
     // 安全区：确认左右真的留了边距
-    const pad = await page.evaluate(() => {
-      const h = getComputedStyle(document.querySelector('header.fixed'));
-      const f = getComputedStyle(document.querySelector('footer.fixed'));
-      const m = getComputedStyle(document.querySelector('main'));
-      return { h: h.paddingLeft, f: f.paddingRight, m: m.paddingLeft };
-    });
-    c.ok(parseFloat(pad.h) >= 8 && parseFloat(pad.m) >= 8,
-      `[${vp.name}] header/main 有左右安全边距 (h=${pad.h} m=${pad.m})`, { vp: vp.name, pad });
+    const pad = await page.evaluate(() => ({
+      bar: getComputedStyle(document.querySelector('#bar > nav')).paddingLeft,
+      dock: getComputedStyle(document.querySelector('#dock > nav')).paddingRight,
+      wrap: getComputedStyle(document.querySelector('.wrap')).paddingLeft,
+    }));
+    const min = Math.min(parseFloat(pad.bar), parseFloat(pad.dock), parseFloat(pad.wrap));
+    c.ok(min >= 8, `[${vp.name}] 具备左右安全边距 (bar=${pad.bar} dock=${pad.dock} wrap=${pad.wrap})`,
+      { vp: vp.name, pad, min });
 
     await ctx.close();
   }

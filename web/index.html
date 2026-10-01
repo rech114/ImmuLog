@@ -3,8 +3,8 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
   <title>Immutalk</title>
 
   <!-- Beer CSS 5.0.3 · MD3 Expressive -->
@@ -24,15 +24,15 @@
 
 <body class="dark">
 
-  <header class="fixed">
+  <header id="bar">
     <nav class="toolbar">
       <div class="shape gem" id="mark" data-state="verified"></div>
       <h6 class="brand">Immutalk</h6>
-      <div class="chip small" id="room" title="房间身份 = 创世 commit 的哈希前 6 位">
+      <div class="chip" id="room" title="房间身份 = 创世 commit 的哈希前 6 位">
         <i>tag</i><span id="room-id">——</span>
       </div>
       <div class="max"></div>
-      <progress class="circle" id="link" value="100" max="100"></progress>
+      <i id="link" class="link-icon" title="已连接">cloud_done</i>
       <button class="circle transparent" id="theme" aria-label="切换主题"><i>light_mode</i></button>
     </nav>
 
@@ -43,75 +43,80 @@
     </nav>
   </header>
 
-  <main class="responsive">
+  <main>
+    <div class="wrap">
 
-    <section class="view active" data-view="chat">
-      <div id="stream"></div>
-    </section>
+      <section class="view active" data-view="chat">
+        <div id="stream"></div>
+        <p class="empty" id="chat-empty"><i>forum</i>还没有消息</p>
+      </section>
 
-    <section class="view" data-view="integrity">
-      <article class="border round medium-padding">
-        <h5><i>verified_user</i> 完整性</h5>
-        <p class="small-text muted">本机独立维护的见证记录。服务器无法篡改这里。</p>
+      <section class="view" data-view="integrity">
+        <article class="border round medium-padding">
+          <h5><i>shield</i> 完整性</h5>
+          <p class="small-text muted">本机独立维护的见证记录。服务器无法篡改这里。</p>
 
-        <div class="row">
-          <div class="shape gem" data-state="verified"></div>
-          <div class="max">
-            <strong>本地见证锚</strong>
-            <p class="small-text muted" id="anchor-line">尚未建立</p>
+          <div class="divider"></div>
+          <div class="kv">
+            <i class="primary-text">bookmark</i>
+            <div class="max">
+              <strong>本地见证锚</strong>
+              <p class="small-text muted" id="anchor-line">尚未建立</p>
+            </div>
+            <span class="chip"><span id="anchor-count">0</span></span>
           </div>
-          <span class="chip small" id="anchor-count">0</span>
-        </div>
 
-        <div class="divider"></div>
-
-        <div class="row">
-          <div class="shape puffy"></div>
-          <div class="max">
-            <strong>快照哈希</strong>
-            <p class="small-text muted">与对端 gossip 比对，用于检测分裂视图</p>
+          <div class="divider"></div>
+          <div class="kv">
+            <i class="tertiary-text">fingerprint</i>
+            <div class="max">
+              <strong>快照哈希</strong>
+              <p class="small-text muted">与对端 gossip 比对，用于检测分裂视图</p>
+            </div>
+            <span class="mono" id="snapshot">——</span>
           </div>
-          <span class="mono small-text" id="snapshot">——</span>
-        </div>
 
-        <div class="divider"></div>
-
-        <div class="row">
-          <div class="shape circle" data-state="verified"></div>
-          <div class="max">
-            <strong>外部锚定</strong>
-            <p class="small-text muted">最近一次时间戳证明</p>
+          <div class="divider"></div>
+          <div class="kv">
+            <i class="secondary-text">schedule</i>
+            <div class="max">
+              <strong>外部锚定</strong>
+              <p class="small-text muted">最近一次时间戳证明</p>
+            </div>
+            <span class="small-text muted" id="anchored-at">——</span>
           </div>
-          <span class="small-text muted" id="anchored-at">——</span>
-        </div>
-      </article>
+        </article>
 
-      <article class="border round medium-padding">
-        <h6>告警</h6>
-        <div id="alarm-log"><p class="small-text muted">无</p></div>
-      </article>
-    </section>
+        <article class="border round medium-padding">
+          <h6 class="section-head"><i>warning</i> 告警</h6>
+          <div id="alarm-log"><p class="small-text muted">无</p></div>
+        </article>
+      </section>
 
-    <section class="view" data-view="peers">
-      <article class="border round medium-padding">
-        <h5><i>hub</i> 对端</h5>
-        <p class="small-text muted">同一 feed 的多个来源。任一致即维持共识。</p>
-        <div id="peers"></div>
-      </article>
-    </section>
+      <section class="view" data-view="peers">
+        <article class="border round medium-padding">
+          <h5><i>lan</i> 对端</h5>
+          <p class="small-text muted">同一 feed 的多个来源。任一致即维持共识。</p>
+          <div class="divider"></div>
+          <div id="peers"></div>
+        </article>
+      </section>
 
+    </div>
   </main>
 
-  <footer class="fixed">
+  <footer id="dock">
     <nav class="toolbar">
       <div class="field border round max">
-        <input id="input" autocomplete="off" placeholder="说点什么…（回车发送）">
+        <input id="input" autocomplete="off" placeholder="说点什么…（回车发送）" aria-label="消息内容">
       </div>
       <button class="circle" id="send" aria-label="发送"><i>send</i></button>
     </nav>
   </footer>
 
-  <div class="snackbar top" id="toast"><i>info</i><span id="toast-text"></span></div>
+  <div class="snackbar top" id="toast" role="status" aria-live="polite">
+    <i>info</i><span id="toast-text"></span>
+  </div>
 
   <script type="module" src="app/main.js"></script>
 </body>

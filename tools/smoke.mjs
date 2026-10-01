@@ -110,7 +110,7 @@ headline('场景 A · ?demo=1 模拟时间线 → 渲染');
   advance(1400); await flush();
   ok($('.alarm').length === 1, '告警作成封条插入时间线');
   ok(one('.alarm .shape').className.includes('burst'), '告警 → 形状 burst');
-  ok(one('#alarm-log .row') !== null, '告警同时进入完整性页签的告警记录');
+  ok(one('#alarm-log .kv') !== null, '告警同时进入完整性页签的告警记录');
 
   // 心跳
   advance(9000); await flush();
@@ -197,7 +197,7 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
   FakeES.last.emit('hello', { head: OID, anchoredAt: '今天 08:00', peers: [{ name: 'mirror', url: 'git@node-b', ok: true }] }, '');
   await flush();
   ok(one('#anchored-at').textContent.includes('08:00'), 'hello 帧更新外部锚定时间');
-  ok(one('#peers .row') !== null, 'hello 帧渲染对端列表');
+  ok(one('#peers .kv') !== null, 'hello 帧渲染对端列表');
 
   // 发送：服务端返回 cas_failed
   one('#input').value = '这条会被拒';

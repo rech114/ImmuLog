@@ -18,7 +18,8 @@ jobs:
         run: npm install --no-audit --no-fund
         working-directory: tools
       - name: 跑逻辑冒烟
-        run: npm run smoke
+        shell: bash
+        run: node smoke.mjs 2>&1 | tee smoke.log
         working-directory: tools
       - name: 上传日志
         if: always()
@@ -44,7 +45,8 @@ jobs:
         run: npx playwright install --with-deps chromium
         working-directory: tools
       - name: 跑布局 / 形状 / 韧性 / SSE / 无障碍
-        run: npm run visual
+        shell: bash
+        run: node run.mjs 2>&1 | tee visual.log
         working-directory: tools
       - name: 上传截图与实测数据
         if: always()

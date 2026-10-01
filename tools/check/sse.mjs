@@ -25,6 +25,9 @@ export default async function sse(browser, _base, c) {
         'x-accel-buffering': 'no',
       });
 
+      // 服务端下发重连间隔，测试不必等浏览器的默认退避
+      res.write('retry: 400\n\n');
+
       const send = (i) => res.write(
         `id: ${OIDS[i]}\nevent: msg\n` +
         `data: ${JSON.stringify({ oid: OIDS[i], seq: i + 1, author: 'srv', body: `第 ${i + 1} 条` })}\n\n`,
@@ -47,7 +50,7 @@ export default async function sse(browser, _base, c) {
 
   await page.goto(`${base}/`, { waitUntil: 'load' });
   await page.waitForSelector('.msg', { timeout: 20000 });
-  await page.waitForTimeout(3500); // 留给掐断 + 自动重连
+  await page.waitForTimeout(6000); // 留给掐断 + retry:400 重连 + 续传
 
   const dom = await page.evaluate(() => ({
     msgs: [...document.querySelectorAll('.msg')].map((el) => el.dataset.oid),
