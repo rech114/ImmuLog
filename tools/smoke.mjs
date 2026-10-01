@@ -111,6 +111,7 @@ headline('场景 A · ?demo=1 模拟时间线 → 渲染');
   ok($('.alarm').length === 1, '告警作成封条插入时间线');
   ok(one('.alarm .shape').className.includes('burst'), '告警 → 形状 burst');
   ok(one('#alarm-log .kv') !== null, '告警同时进入完整性页签的告警记录');
+  ok(one('#alarm-log .placeholder') === null, '告警记录里的「无」占位符被清除（不残留）');
 
   // 心跳
   advance(9000); await flush();

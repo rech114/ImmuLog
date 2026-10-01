@@ -22,11 +22,17 @@ export default async function resilience(browser, base, c) {
     await page.route('**/beer.min.js', (r) => r.abort());
     await page.goto(`${base}/?demo=1`);
     await page.waitForSelector('.msg', { timeout: 25000 });
-    await page.waitForTimeout(3000);
 
+    // 要证的不是"重试得少"，而是"重试会停"——取两个时间点对比
+    await page.waitForTimeout(2500);
+    const early = await page.evaluate(() => window.__t['120'] ?? 0);
+    await page.waitForTimeout(3000);
+    const late = await page.evaluate(() => window.__t['120'] ?? 0);
     const counts = await page.evaluate(() => window.__t);
-    const retries = counts['120'] ?? 0;
-    c.ok(retries <= 3, `Beer JS 不可用时不无限重试（3 秒内 120ms 级重试 ${retries} 次）`, { retries, counts });
+
+    c.ok(late === early, `Beer JS 不可用时有限重试后停止（2.5s=${early} 次 → 5.5s=${late} 次）`,
+      { early, late });
+    c.ok(late > 0 && late <= 20, `重试有上限且不是零次（${late}）`, { late, counts });
 
     const alive = await page.evaluate(() => ({
       msgs: document.querySelectorAll('.msg').length,

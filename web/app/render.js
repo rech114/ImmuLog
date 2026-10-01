@@ -146,6 +146,7 @@ function alarmEl(it) {
   box.append(h, p, m, nav);
   el.append(shape, box);
 
+  refs.alarmLog.querySelector('.placeholder')?.remove(); // 清掉初始的「无」
   refs.alarmLog.prepend(evidenceEl(it));
   return el;
 }
@@ -155,7 +156,7 @@ function evidenceEl(it) {
   row.className = 'kv';
 
   const icon = document.createElement('i');
-  icon.className = 'error-text';
+  icon.style.color = 'var(--error)';
   icon.textContent = 'report';
 
   const box = document.createElement('div');
@@ -186,7 +187,7 @@ export function meta(s) {
       row.className = 'kv';
 
       const icon = document.createElement('i');
-      icon.className = p.ok ? 'primary-text' : 'error-text';
+      if (!p.ok) icon.style.color = 'var(--error)';
       icon.textContent = p.ok ? 'cloud_done' : 'cloud_off';
 
       const box = document.createElement('div');
