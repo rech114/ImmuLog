@@ -303,8 +303,15 @@ export function room(id) {
 
 export function link(state) {
   refs.link.dataset.state = state;
-  refs.link.textContent = state === 'up' ? 'cloud_done' : 'cloud_off';
-  refs.link.title = state === 'up' ? 'connected' : 'disconnected, reconnecting';
+  refs.link.textContent = state === 'down' ? 'cloud_off' : 'cloud_done';
+  // 'poll' is a connection that works and answers in batches (§7.8). Calling it
+  // "connected" would be a lie the user notices at the first pause; calling it
+  // broken would be a lie about a working fallback.
+  refs.link.title = state === 'up'
+    ? 'connected'
+    : state === 'poll'
+      ? 'polling: a proxy is buffering the live stream, so messages arrive in batches'
+      : 'disconnected, reconnecting';
 }
 
 // ── Views and interaction ───────────────────────────────────────

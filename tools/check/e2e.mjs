@@ -222,6 +222,39 @@ export default async function e2e(browser, _base, c) {
     const real = consoleErrors.filter((e) => !/favicon|404/i.test(e));
     c.ok(real.length === 0, 'no uncaught JS errors throughout', { errors: real });
 
+    // ── 11) ?poll=1: the same app over batches, for a proxy that buffers ──
+    //
+    // The fallback in DESIGN 7.8 has to be proven against the real backend
+    // rather than assumed: the server hangs up after each batch, the browser
+    // reconnects, and the timeline still has to arrive.
+    const pollPage = await ctx.newPage();
+    const pollErrors = [];
+    pollPage.on('pageerror', (e) => pollErrors.push(String(e).slice(0, 200)));
+    await pollPage.goto(base + '/?poll=1', { waitUntil: 'load' });
+    await pollPage.waitForSelector('#input', { timeout: 15000 });
+
+    // A cycle ending is the normal end of a cycle here, not a lost connection.
+    await pollPage.waitForFunction(
+      () => document.querySelector('#link')?.dataset.state === 'poll',
+      undefined, { timeout: 20000 },
+    );
+    c.ok(true, '?poll=1 says it is polling instead of pretending to be live');
+
+    // A batch replayed the timeline, so the messages came through with no
+    // connection being held -- and the pre-replay alarm rode along on the first
+    // batch, which is the only batch it belongs to.
+    await pollPage.waitForFunction(
+      () => document.querySelector('#room-id')?.textContent !== '--',
+      undefined, { timeout: 20000 },
+    );
+    c.ok(true, 'the first batch replays the timeline');
+    c.ok(await pollPage.evaluate(() => !!document.querySelector('.alarm')),
+      'the pre-replay alarm arrives inside the first batch');
+    c.ok(pollErrors.length === 0, 'no uncaught JS errors in poll mode', { errors: pollErrors });
+
+    await shot(pollPage, 'e2e-poll.png');
+    await pollPage.close();
+
     // The service is still alive. An anonymous probe would answer {ok} and
     // nothing else, which is asserted in internal/web/auth_test.go.
     const h2 = await (await fetch(base + '/api/health', { headers: authHeaders() })).json();

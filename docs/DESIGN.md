@@ -646,6 +646,49 @@ If some enterprise proxy buffers `text/event-stream`:
 **The same server code path, only the connection is not held.** The frontend's
 `EventSource` code does not change at all.
 
+**Status: implemented.** `handleStream` serves the batch and returns; the poll
+cadence *is* the reconnect cadence, so there is no new timer on either side and
+no second mode in `stream.js`. `hello` carries `poll: true`, and the link
+indicator says "polling" rather than "connected", because a fallback that looks
+exactly like the real thing is a fallback nobody notices is in use.
+
+Two details that are easy to get wrong, and are therefore asserted:
+
+- The pre-replay alarm (§7.5) belongs to the **first screen only**. Sent on every
+  batch it would stack another card in the timeline every few seconds, and a
+  warning that repeats is a warning nobody reads. Anything that happens later
+  still arrives through the background check's broadcast — which is the path
+  §8.5 always intended for it.
+- A cycle ending must not read as a lost connection. `EventSource` fires `error`
+  every time the server hangs up, so the indicator stays on "polling" instead of
+  blinking red on a schedule.
+
+#### Cloudflare Tunnel and Cloudflare's proxy
+
+This is the deployment the path exists for. Four things line up, and one cannot
+be made to:
+
+| | |
+|---|---|
+| idle timeout | Cloudflare cuts a proxied connection after roughly 100 s of silence. `Heartbeat` is 20 s (§7.7) — that constant was chosen for intermediaries, and this is the one it was chosen for |
+| cookie security | `cloudflared` sends `X-Forwarded-Proto: https`, which is exactly what `auth.go` reads to set `Secure` (§7.11). Without it the cookie would be dropped over HTTPS |
+| buffering, usually | `Cache-Control: no-cache, no-transform` is already sent, and Cloudflare does not compress `text/event-stream`, so the usual compressor stall does not apply |
+| **buffering, sometimes** | it has still been reported to buffer regardless ([cloudflared#1496](https://github.com/cloudflare/cloudflared/issues/1496), self-resolved the same day) — so **`?poll=1` is the answer, and it is reached deliberately** |
+
+Because the flag is opt-in, it is worth saying where it can fail: if a deployment
+buffers, the user sees a page that loads and then says nothing, with no error.
+The window is bounded by configuration, not by detection.
+
+#### Deliberately not adopted: automatic fallback
+
+The client *could* watch for "no `open` and no frame within N seconds" and switch
+itself. It is not done because the signal is ambiguous — a slow network and a
+buffering proxy look identical from inside `EventSource` — and a false positive
+downgrades a working stream to three-second batches. **Turning a good connection
+into a bad one to fix a bad one is a bad trade.** Revisit if the false-positive
+rate turns out to be near zero in practice; until then a bookmark is the honest
+mechanism.
+
 ### 7.9 Authentication: two kinds of trust
 
 This is the easiest thing to conflate, and it must be kept apart:

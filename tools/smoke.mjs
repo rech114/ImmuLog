@@ -194,7 +194,7 @@ headline('Scenario B - no demo: EventSource frames + the fetch failure path');
 
   ok(FakeES.last !== undefined, 'an SSE connection was opened');
   ok(FakeES.last.url === '/api/stream', 'connected to /api/stream');
-  ok($('.msg').length === 0, 'nothing rendered at first (no faked first screen)');
+  ok(!FakeES.last.url.includes('poll'), 'without ?poll=1 it stays a held stream');  ok($('.msg').length === 0, 'nothing rendered at first (no faked first screen)');
 
   FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: 'from the real stream' }, OID);
   await flush();
@@ -266,6 +266,41 @@ headline('Scenario B - no demo: EventSource frames + the fetch failure path');
   ok(one('.msg[data-state="unverified"]') !== null, 'cas_failed -> the message is marked unverified');
   ok(one('#toast').classList.contains('active'), 'cas_failed was not swallowed; the user was told');
   ok(one('#toast-text').textContent.includes('cas_failed'), `the notice carries the error code (${one('#toast-text').textContent})`);
+}
+
+// ── Scenario C: ?poll=1, the degrade path for a buffering proxy ─────
+
+headline('Scenario C - ?poll=1: batches instead of a held stream');
+{
+  class FakeES {
+    constructor(url) { this.url = url; this.listeners = {}; FakeES.last = this; }
+    addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); }
+    close() { this.closed = true; }
+    emit(type, payload, id) {
+      for (const fn of this.listeners[type] || []) fn({ type, data: JSON.stringify(payload), lastEventId: id });
+    }
+  }
+  globalThis.EventSource = FakeES;
+
+  const dom = await boot('c', '?poll=1');
+  const one = (s) => dom.window.document.querySelector(s);
+
+  ok(FakeES.last.url.includes('poll=1'), `the poll flag reaches the server (${FakeES.last.url})`);
+
+  // A cycle ending is the normal end of a cycle, not a lost link: the indicator
+  // must not blink down every few seconds.
+  FakeES.last.onerror?.();
+  await flush();
+  ok(one('#link').dataset.state === 'poll', 'a cycle ending does not look like a lost connection');
+  ok(one('#link').textContent === 'cloud_done', 'the icon still reads as connected');
+  ok(/polling/.test(one('#link').title), `the tooltip says why messages arrive in batches (${one('#link').title})`);
+
+  // A batch renders exactly like a live frame.
+  FakeES.last.emit('hello', { head: 'a'.repeat(40), poll: true }, '');
+  FakeES.last.emit('msg', { oid: 'b'.repeat(40), seq: 1, author: 'alice', body: 'batched' }, 'b'.repeat(40));
+  await flush();
+  ok([...dom.window.document.querySelectorAll('.msg .text')].some((e) => e.textContent === 'batched'),
+    'a batched frame renders like any other');
 }
 
 // ── Stylesheet integrity: CSS has no // comments, and one stray line

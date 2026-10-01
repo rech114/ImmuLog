@@ -76,6 +76,20 @@ token 是**服务凭证，不是身份**。真实性来自 commit 签名：偷�
 
 **TLS 没有内置。** 请在最前面的反向代理上终止；TLS 和 token 各自保护什么、不保护什么，见 [DESIGN.md §7.11](docs/DESIGN.md)，两者都覆盖不到的那部分见 §7.12。
 
+## 放在反向代理后面
+
+节点已经为中间设备做了两件事：发送 `X-Accel-Buffering: no`，以及每 20 秒 ping 一次 —— 后者正是让空闲的流不被中途掐断的原因。（Cloudflare 会在代理连接静默约 100 秒后断开，所以心跳不是装饰。）
+
+如果代理仍然缓冲 `text/event-stream`，用 `?poll=1` 打开应用：
+
+```
+https://chat.example.com/?poll=1
+```
+
+服务端会改为按批应答并随即断开，`EventSource` 按服务端下发的间隔重连。其它什么都不用改。顶栏的连接指示会显示 **polling**，所以你能一眼看出自己在哪个模式下。
+
+**Cloudflare Tunnel** 与上述全部兼容。`cloudflared` 还会带上 `X-Forwarded-Proto: https`，这正是把解锁 cookie 标记为 `Secure` 的依据。该方案覆盖什么、覆盖不到什么，见 [DESIGN.md §7.8](docs/DESIGN.md)。
+
 ## 签名
 
 签名不是强制的，但没有签名密钥时，Git 的 `author` 字段并不能证明身份。

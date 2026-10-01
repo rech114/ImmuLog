@@ -306,11 +306,19 @@ func (s *Server) pushLoop(ctx context.Context) {
 
 // ── Downstream ──────────────────────────────────────────────────────
 
-// handleStream uses one code path for both the first screen and
-// resume-after-disconnect.
+// handleStream uses one code path for the first screen, resume-after-disconnect
+// and poll mode.
 //
 // The event id is the commit OID: the browser sends Last-Event-ID on reconnect,
 // so resuming needs no application-level protocol at all.
+//
+// `?poll=1` (docs/DESIGN.md §7.8) is the same code path with the connection not
+// held: serve what is new, hang up, and let `EventSource` reconnect on the
+// interval `Open` just sent. It exists for proxies that buffer
+// `text/event-stream` whatever the headers say -- including Cloudflare, where
+// the buffering comes and goes. **No frontend change is needed for it**, because
+// a connection that closes is exactly what the browser already knows how to
+// resume from.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	sess, err := NewSession(w)
 	if err != nil {
@@ -326,6 +334,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if since == "" {
 		since = r.Header.Get("Last-Event-ID")
 	}
+	poll := r.URL.Query().Has("poll")
 
 	limit := replayFirst
 	if since != "" {
@@ -333,10 +342,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify before replaying: if the history has been touched, the user must be
-	// told **before** seeing any of it
-	if v, err := s.store.Verify(ctx); err == nil && !v.OK {
-		if ev, ok := alarmEvent(v); ok {
-			_ = sess.Send(ev)
+	// told **before** seeing any of it.
+	//
+	// First contact only. In poll mode this runs every few seconds, and a notice
+	// repeated on every batch is noise rather than a warning -- anything that
+	// happens *after* the first screen is caught by the background check and
+	// broadcast, which is the path that was always meant to report it (§8.5).
+	if since == "" {
+		if v, err := s.store.Verify(ctx); err == nil && !v.OK {
+			if ev, ok := alarmEvent(v); ok {
+				_ = sess.Send(ev)
+			}
 		}
 	}
 
@@ -344,7 +360,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("replay interrupted", "err", err)
 		return
 	}
-	if err := sess.Send(Event{Type: "hello", Data: s.hello(ctx)}); err != nil {
+	if err := sess.Send(Event{Type: "hello", Data: s.hello(ctx, poll)}); err != nil {
+		return
+	}
+	// That is the whole of poll mode: everything above is unchanged, and the
+	// connection is simply not held.
+	if poll {
 		return
 	}
 
@@ -424,9 +445,12 @@ type helloPayload struct {
 	// still be carrying fewer feeds than somebody else.
 	Gossip  []feed.PeerReport    `json:"gossip,omitempty"`
 	Missing []feed.SeenElsewhere `json:"missingFeeds,omitempty"`
+	// Poll reports that this node is answering in batches instead of holding a
+	// stream, so the UI can say so rather than looking broken (§7.8).
+	Poll bool `json:"poll,omitempty"`
 }
 
-func (s *Server) hello(ctx context.Context) helloPayload {
+func (s *Server) hello(ctx context.Context, poll bool) helloPayload {
 	head, _ := s.store.Tip(ctx)
 	snap, anchor, peers := s.state.Snapshot()
 	gossip, missing := s.state.Gossip()
@@ -438,6 +462,7 @@ func (s *Server) hello(ctx context.Context) helloPayload {
 		Peers:      peers,
 		Gossip:     gossip,
 		Missing:    missing,
+		Poll:       poll,
 		Identity:   identityPayload{Signed: s.store.Signed()},
 		Encryption: s.encryption(ctx),
 	}

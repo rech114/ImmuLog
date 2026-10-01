@@ -76,6 +76,20 @@ The token is a **service credential, not an identity**. Authenticity comes from 
 
 **TLS is not built in.** Terminate it at a reverse proxy; see [DESIGN.md §7.11](docs/DESIGN.md) for what TLS and the token each do and do not protect, and §7.12 for the part neither of them covers.
 
+## Behind a reverse proxy
+
+Two things the node already does for an intermediary: it sends `X-Accel-Buffering: no`, and it pings every 20 seconds — which is what keeps an idle stream alive through something that would otherwise cut it. (Cloudflare drops a silent proxied connection after about 100 seconds, so the heartbeat is not decoration.)
+
+If a proxy buffers `text/event-stream` anyway, open the app with `?poll=1`:
+
+```
+https://chat.example.com/?poll=1
+```
+
+The server then answers in batches and hangs up each time, and `EventSource` reconnects on the interval the server sends it. Nothing else changes. The link indicator reads **polling** so it is obvious which mode you are in.
+
+**Cloudflare Tunnel** works with all of the above. `cloudflared` also sends `X-Forwarded-Proto: https`, which is what marks the unlock cookie `Secure`. See [DESIGN.md §7.8](docs/DESIGN.md) for what that setup covers and what it cannot.
+
 ## Signing
 
 Signing is optional, but without a signing key the Git author field is not an authenticated identity.
