@@ -204,8 +204,28 @@ export function stopNode(node) {
  * 让 hub 拿到 src 的 feed。
  *
  * 走 fetch 而不是 push：本机 sandbox 的 receive-pack 不可用（见 README
- * 「已知的本机环境限制」）。CI 上节点自己的 push 已经完成，这一步是幂等的空操作。
+ * 「已知的本机环境限制」）。
+ *
+ * ⚠️ 在 CI 上节点自己的 `pushLoop` 是**能工作**的，于是它会和这里同时写
+ * hub 的同一个 ref —— git 会报 "cannot lock ref ... but expected"。这是正常
+ * 的写竞争，不是错误：等它写完重试即可。
  */
-export function publish(hubDir, srcDir) {
+export function publish(hubDir, srcDir, tries = 6) {
+  for (let i = 0; i < tries; i += 1) {
+    try {
+      git(hubDir, 'fetch', '--quiet', srcDir, '+refs/feeds/*:refs/feeds/*');
+      return;
+    } catch (e) {
+      const msg = String(e.stderr || e.message || e);
+      if (!/cannot lock ref|cannot lock|but expected/.test(msg)) throw e;
+      sleepSync(200);
+    }
+  }
+  // 最后一次不复用 catch，让调用方看见真实的错误
   git(hubDir, 'fetch', '--quiet', srcDir, '+refs/feeds/*:refs/feeds/*');
+}
+
+/** execFileSync 是同步的，所以这里也要同步地等。 */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
