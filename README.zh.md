@@ -21,6 +21,7 @@ Web 界面把这套历史呈现成聊天记录。消息可以使用 Git SSH 签�
 - 使用 Git SSH 签名认证消息
 - 本地 witness anchor，用于检测历史改写
 - 多源同步：先进入隔离区，再校验，只允许 fast-forward
+- Snapshot gossip（快照流言）：与对端比对**整体视图**，能发现 relay 从未告诉你的 feed
 - 多节点之间的 split-view 检测
 - 可选的外部锚定服务
 - 可选的消息体加密，使用按 epoch 划分的密钥
@@ -117,6 +118,14 @@ PORT=8082 \
 网络数据首先进入隔离区 ref。只有通过本地检查，并且能够以 fast-forward 方式推进的历史，才会进入正常 feed。
 
 当两个 remote 为同一个 feed 提供互相冲突的历史时，ImmuLog 会报告 split view（分裂视图），不会静默地任选其中一个。
+
+上述比对是**逐条 feed** 进行的，因此看不见"某个源干脆不告诉你某条 feed"这种情况。gossip 补上这个缺口：把 `IMMULOG_PEERS` 指向几个节点，每隔一个间隔就会与它们比对各自的整体视图。
+
+```bash
+IMMULOG_PEERS="alice=http://10.0.0.7:8082,carol=http://10.0.0.9:8082" ./immulog
+```
+
+一次视图比对只需一个请求，因此 gossip 能覆盖到你并不从中拉取的节点。它是**只读的**：对端声称的任何内容都不会被写进 `refs/feeds/*`。只有对端能看到、本机没有的 feed 会列在 Peers 面板里，而不会被当作告警。另外，少于三个对端时无法判断分歧是哪一方的问题，启动日志会说明这一点。
 
 ## 消息体加密
 
@@ -295,6 +304,8 @@ ImmuLog 没有重新实现 Git object storage 或 Git transport，而是把这�
 | `IMMULOG_REMOTES` | 未设置 | Git 同步源，支持 `url` 或 `name=url`，多个源用逗号分隔 |
 | `IMMULOG_ANCHOR_URL` | 未设置 | 可选的外部锚定服务 |
 | `IMMULOG_SYNC_INTERVAL` | `5s` | 同步间隔 |
+| `IMMULOG_PEERS` | 未设置 | gossip 对端，支持 `url` 或 `name=url`，多个用逗号分隔；URL 是 HTTP 地址，如 `http://host:8082` |
+| `IMMULOG_GOSSIP_INTERVAL` | `5s` | 快照 gossip 间隔 |
 | `IMMULOG_ANCHOR_INTERVAL` | `60s` | 外部锚定间隔 |
 | `IMMULOG_ENCRYPT` | 未设置 | 设置为 `1` 开启消息体加密 |
 
@@ -343,6 +354,7 @@ immulog/
 │       ├── verify.go
 │       ├── snapshot.go
 │       ├── sync.go
+│       ├── gossip.go
 │       ├── anchor.go
 │       ├── crypto.go
 │       ├── epoch.go

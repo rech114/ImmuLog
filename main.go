@@ -112,8 +112,9 @@ func run() error {
 		return err
 	}
 
-	// 5) Multi-source sync and external anchoring (both optional)
+	// 5) Multi-source sync, snapshot gossip and external anchoring (all optional)
 	remotes := parseRemotes(os.Getenv("IMMULOG_REMOTES"))
+	peers := gossipPeers(parseRemotes(os.Getenv("IMMULOG_PEERS")))
 	var publisher feed.Publisher
 	if u := os.Getenv("IMMULOG_ANCHOR_URL"); u != "" {
 		publisher = feed.HTTPPublisher{URL: u}
@@ -127,11 +128,13 @@ func run() error {
 		Repo:      repo,
 		Files:     files,
 		Remotes:   remotes,
+		Peers:     peers,
 		Publisher: publisher,
 	})
 	srv.Watch(ctx,
 		duration("IMMULOG_SYNC_INTERVAL", web.SyncInterval),
-		duration("IMMULOG_ANCHOR_INTERVAL", web.AnchorInterval))
+		duration("IMMULOG_ANCHOR_INTERVAL", web.AnchorInterval),
+		duration("IMMULOG_GOSSIP_INTERVAL", web.GossipInterval))
 
 	// No WriteTimeout: SSE is a long-lived connection and it would cut it off
 	s := &http.Server{
@@ -149,7 +152,8 @@ func run() error {
 
 	log.Info("ImmuLog ready",
 		"addr", s.Addr, "repo", dir, "feed", pub,
-		"signed", store.Signed(), "remotes", len(remotes), "anchor", publisher != nil)
+		"signed", store.Signed(), "remotes", len(remotes),
+		"gossip", len(peers), "anchor", publisher != nil)
 	if store.Signed() {
 		log.Info("messages will be signed", "fingerprint", feed.ShortKey(fingerprint))
 	} else {
@@ -157,6 +161,14 @@ func run() error {
 	}
 	if len(remotes) == 0 {
 		log.Warn("no IMMULOG_REMOTES: single-node mode, no peer sync")
+	}
+	if len(peers) == 0 {
+		log.Warn("no IMMULOG_PEERS: no snapshot gossip, a split view stays local")
+	} else if len(peers) < 3 {
+		// Two views disagreeing say that something is wrong, never who is
+		// wrong -- the third view is what localises it (core/feed/gossip.go).
+		log.Warn("fewer than 3 gossip peers: a disagreement cannot be attributed to either side",
+			"peers", len(peers))
 	}
 	if publisher == nil {
 		log.Warn("no IMMULOG_ANCHOR_URL: anchors stay local, not truly external")
@@ -172,6 +184,9 @@ func run() error {
 //
 // Two forms are accepted: `url` (auto-named) and `name=url`. The name is only
 // used as a quarantine slot and is normalised into ref-safe form via FeedID.
+//
+// IMMULOG_PEERS uses the same syntax, so it is parsed by the same function --
+// see gossipPeers for why the two lists stay different types.
 func parseRemotes(spec string) []feed.Remote {
 	var out []feed.Remote
 	seen := map[string]bool{}
@@ -195,6 +210,22 @@ func parseRemotes(spec string) []feed.Remote {
 		}
 		seen[name] = true
 		out = append(out, feed.Remote{Name: name, URL: url})
+	}
+	return out
+}
+
+// gossipPeers adapts the shared `name=url` parser's output for the gossip loop.
+//
+// A gossip peer is an HTTP endpoint, not a git remote, so the two stay
+// different types even though the syntax is shared: the compiler should refuse
+// to hand `file:///srv/chat.git` to an HTTP client.
+func gossipPeers(rs []feed.Remote) []feed.GossipPeer {
+	if len(rs) == 0 {
+		return nil
+	}
+	out := make([]feed.GossipPeer, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, feed.GossipPeer{Name: r.Name, URL: r.URL})
 	}
 	return out
 }

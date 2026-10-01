@@ -17,10 +17,11 @@ import sse from './check/sse.mjs';
 import a11y from './check/a11y.mjs';
 import e2e from './check/e2e.mjs';
 import federation from './check/federation.mjs';
+import gossip from './check/gossip.mjs';
 
-// The first five run against mocks or in-memory servers; e2e and federation
-// drive the real Go binary (so `go` must be on PATH).
-const CHECKS = [layout, shapes, resilience, sse, a11y, e2e, federation];
+// The first five run against mocks or in-memory servers; e2e, federation and
+// gossip drive the real Go binary (so `go` must be on PATH).
+const CHECKS = [layout, shapes, resilience, sse, a11y, e2e, federation, gossip];
 
 await mkdir(OUT, { recursive: true });
 

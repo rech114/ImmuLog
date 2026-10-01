@@ -33,6 +33,7 @@ type Config struct {
 	Repo      *gitx.Repo
 	Files     fs.FS
 	Remotes   []feed.Remote
+	Peers     []feed.GossipPeer
 	Publisher feed.Publisher
 }
 
@@ -43,6 +44,7 @@ type Server struct {
 	repo      *gitx.Repo
 	files     fs.FS
 	remotes   []feed.Remote
+	peers     []feed.GossipPeer
 	publisher feed.Publisher
 	state     *State
 	log       *slog.Logger
@@ -61,6 +63,7 @@ func New(cfg Config) *Server {
 		repo:      cfg.Repo,
 		files:     cfg.Files,
 		remotes:   cfg.Remotes,
+		peers:     cfg.Peers,
 		publisher: cfg.Publisher,
 		state:     &State{},
 		log:       slog.Default(),
@@ -407,17 +410,25 @@ type helloPayload struct {
 	AnchoredAt string          `json:"anchoredAt,omitempty"`
 	External   bool            `json:"external"`
 	Peers      []feed.PeerView `json:"peers,omitempty"`
+	// Gossip is the peer *view* comparison. It is kept apart from Peers, which
+	// is the git-sync picture: a peer can agree on every feed it carries and
+	// still be carrying fewer feeds than somebody else.
+	Gossip  []feed.PeerReport    `json:"gossip,omitempty"`
+	Missing []feed.SeenElsewhere `json:"missingFeeds,omitempty"`
 }
 
 func (s *Server) hello(ctx context.Context) helloPayload {
 	head, _ := s.store.Tip(ctx)
 	snap, anchor, peers := s.state.Snapshot()
+	gossip, missing := s.state.Gossip()
 
 	p := helloPayload{
 		Head:       head,
 		Signed:     s.store.Signed(),
 		Snapshot:   snap.Digest,
 		Peers:      peers,
+		Gossip:     gossip,
+		Missing:    missing,
 		Identity:   identityPayload{Signed: s.store.Signed()},
 		Encryption: s.encryption(ctx),
 	}
@@ -439,8 +450,14 @@ func (s *Server) hello(ctx context.Context) helloPayload {
 }
 
 // handleSnapshot returns this node's view of every feed -- the gossip unit.
+//
+// It is the same endpoint a peer reads (core/feed's FetchSnapshot), so the
+// browser and the gossip loop are looking at one shape of truth rather than
+// two. `refs` is what makes set-level comparison possible: a digest alone would
+// say "different" without saying what.
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, anchor, peers := s.state.Snapshot()
+	gossip, missing := s.state.Gossip()
 	if snap.Digest == "" {
 		if fresh, err := feed.Capture(r.Context(), s.repo); err == nil {
 			snap = fresh
@@ -454,18 +471,20 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"digest":   snap.Digest,
-		"refs":     snap.Refs,
-		"at":       snap.At,
-		"anchor":   anchor,
-		"peers":    peers,
-		"identity": identity,
-		"witness":  verdict.Witness,
-		"tip":      verdict.Current,
-		"ok":       verdict.OK,
-		"reason":   verdict.Reason,
-		"feed":     s.store.FeedRef(),
-		"remotes":  s.remotes,
+		"digest":       snap.Digest,
+		"refs":         snap.Refs,
+		"at":           snap.At,
+		"anchor":       anchor,
+		"peers":        peers,
+		"gossip":       gossip,
+		"missingFeeds": missing,
+		"identity":     identity,
+		"witness":      verdict.Witness,
+		"tip":          verdict.Current,
+		"ok":           verdict.OK,
+		"reason":       verdict.Reason,
+		"feed":         s.store.FeedRef(),
+		"remotes":      s.remotes,
 	})
 }
 
@@ -480,6 +499,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"clients":  s.hub.ClientCount(),
 		"remotes":  len(s.remotes),
 		"peers":    peers,
+		"gossip":   len(s.peers),
 		"anchored": anchor.OID != "",
 	})
 }

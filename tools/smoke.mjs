@@ -117,6 +117,19 @@ headline('Scenario A - ?demo=1 simulated timeline -> rendering');
   ok(one('#alarm-log .kv') !== null, 'the alarm also lands in the integrity tab log');
   ok(one('#alarm-log .placeholder') === null, 'the "none" placeholder is cleared from the alarm log');
 
+  // Gossip: the peer *view* comparison, kept apart from the git-sync picture
+  const peerRows = [...one('#peers').children];
+  ok(peerRows.length === 6, `git remotes and gossip peers share the panel (${peerRows.length} rows)`);
+  ok(peerRows.filter((r) => r.textContent.includes('gossip')).length === 3, 'gossip peers are tagged so the two pictures stay distinguishable');
+  ok(peerRows.filter((r) => r.textContent.includes('differs')).length === 2, 'disagreement is marked on both a remote and a peer');
+  ok(one('#snapshot').textContent !== '--', `the snapshot event carries the digest peers are compared against (${one('#snapshot').textContent})`);
+
+  // A feed peers can see and this node cannot is discovery, not tampering
+  const missing = one('#missing-feeds .kv');
+  ok(missing !== null, 'a feed only peers know about is listed');
+  ok(missing.textContent.includes('2 peers'), 'the peer count is the signal -- two views agreeing beats one claim');
+  ok($('.alarm').length === 1, 'discovery is never raised as an alarm');
+
   // Heartbeat
   advance(9000); await flush();
   ok($('.msg').length === 6, 'a heartbeat message arrives (the timeline is live)');
@@ -221,6 +234,20 @@ headline('Scenario B - no demo: EventSource frames + the fetch failure path');
   ok(one('#identity-chip').textContent === 'signed', 'the hello frame updates the signing state');
   ok(one('#identity-line').textContent.includes('SHA256'), 'the hello frame updates the key fingerprint');
   ok(one('#peers .kv') !== null, 'the hello frame renders the peer list');
+
+  // The view comparison arrives on the same frame but is a separate picture
+  FakeES.last.emit('hello', {
+    head: OID,
+    gossip: [{ name: 'hub', url: 'http://node-b:8082', ok: false, note: 'knows feeds this node does not' }],
+    missingFeeds: [{ feed: FEED, peers: 2 }],
+  }, '');
+  await flush();
+  ok([...one('#peers').children].some((r) => r.textContent.includes('gossip')), 'the hello frame renders the gossip view comparison');
+  ok(one('#missing-feeds .kv') !== null, 'the hello frame renders feeds peers hold and this node does not');
+
+  FakeES.last.emit('snapshot', { digest: 'f'.repeat(40), feeds: 7 }, 'f'.repeat(40));
+  await flush();
+  ok(one('#snapshot').textContent === 'ffffff', 'a live snapshot frame moves the digest peers are compared against');
 
   // When unsigned it must say plainly that impersonation is possible
   FakeES.last.emit('hello', { head: OID, identity: { signed: false } }, '');

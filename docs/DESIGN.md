@@ -332,6 +332,30 @@ proof follows Certificate Transparency's STH / consistency-proof design, and
 clients exchange snapshot hashes to detect a split view. Periodically hand the
 snapshot hash to something like OpenTimestamps for external anchoring.
 
+**L4's two halves are not the same mechanism, and only one of them ever leaves
+the machine.** External anchoring hands a digest to somebody else's turf.
+Gossip compares digests with peers this node may not even *fetch* from: a view
+costs one request, so the set of parties who can contradict you stops being
+bounded by the git remotes in the configuration. Breadth is the multiplier in
+§0's formula, and gossip is what makes breadth cheap.
+
+That is the whole reason it is not a second copy of the sync check. Per-feed
+comparison is blind **by construction** to a feed that only one side serves:
+`Sync` groups claims by ref, so a ref nobody else declares never enters its loop
+and a source can omit a feed while staying invisible. Gossip compares the two
+ref **sets**, which is the only way to see it.
+
+**Two peers are not enough to act on a disagreement.** Two views disagreeing say
+*that* something is wrong, never *who* is wrong; the third view is what
+localises it. A gossip set of one is a node talking to itself. The mechanism is
+therefore worth having exactly where several people run nodes independently --
+which is also why the server says so out loud when fewer than three peers are
+configured.
+
+Discovery is not an alarm. A feed only peers can see is reported, never raised
+as a tampering alarm: one peer knowing about it is a member joining, and crying
+wolf is how a real warning gets ignored.
+
 ### 6.4 Boundaries that must be stated honestly
 
 | Limit | Explanation |
@@ -523,8 +547,8 @@ Event types:
 | `msg` | a new message |
 | `retract` | a retraction |
 | `alarm` | **a tampering alarm** (§6.3's verdict, rendered as a system message the attacker cannot delete) |
-| `snapshot` | a snapshot digest (for gossip) |
-| `checkpoint` | a periodic anchor |
+| `snapshot` | a snapshot digest; fires only when the digest changes |
+| `encryption` | an encryption epoch change (created or discarded) |
 
 ### 7.4 Resume-after-disconnect comes free
 
@@ -858,6 +882,9 @@ The checks under `tools/`, filtered by "is this actually necessary here":
 | `check/resilience.mjs` | degradation when Beer's JS/CSS fails or the write endpoint returns 500 | playwright |
 | `check/sse.mjs` | a self-hosted SSE server that hangs up, to verify automatic reconnection and `Last-Event-ID` resume | playwright + node:http |
 | `check/a11y.mjs` | axe-core WCAG A/AA, keyboard operability, accessible button names | axe-core |
+| `check/e2e.mjs` | the page against the real Go binary: send, render, restart behaviour | playwright + go |
+| `check/federation.mjs` | two real nodes on one relay: foreign feeds sync and become trusted state; a rewritten relay is refused and alarmed on | playwright + go |
+| `check/gossip.mjs` | three real nodes on two disjoint relays: the view comparison sees a feed the local relay never showed | playwright + go |
 
 **Deliberately not adopted** (with reasons recorded):
 
@@ -982,6 +1009,7 @@ round trips.**
 | **4** | commit signing + key rotation notices | done |
 | **5** | multi-source sync + quarantine verification + snapshots + anchor chain | done |
 | **6** | epoch key encryption (crypto-shredding, i.e. forgettability) | done |
+| **7** | snapshot gossip: comparing whole views, not feed by feed | done |
 
 **Every phase runs standalone and can be rolled back.**
 
@@ -1024,6 +1052,13 @@ Our clients hold every ref, so comparing them one by one is both simpler and
 The bar for divergence is deliberately strict: only two tips that are **not
 ancestors of one another** count as a contradiction. One side being behind is
 just "not synced yet".
+
+`Diverged` answers a narrower question than `Compare` does. `Compare` returns
+four buckets: contradictions, feeds only one side serves (in either direction),
+and feeds it refuses to judge because the peer's object is absent locally. Only
+the first is an alarm. The other three exist because a contradicted *tip* and a
+missing *feed* are different events, and the second is the one a per-feed
+comparison can never reach.
 
 ### Notes on the anchor chain (`feed/anchor.go`)
 

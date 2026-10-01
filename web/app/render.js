@@ -29,6 +29,7 @@ const refs = {
   input: $('#input'),
   send: $('#send'),
   peers: $('#peers'),
+  missing: $('#missing-feeds'),
   alarmLog: $('#alarm-log'),
   anchorCount: $('#anchor-count'),
   anchorLine: $('#anchor-line'),
@@ -221,32 +222,76 @@ export function meta(s) {
   }
 
   refs.peers.innerHTML = '';
-  for (const p of s.peers ?? []) {
-    const row = document.createElement('div');
-    row.className = 'kv';
+  for (const p of s.peers ?? []) refs.peers.appendChild(peerRow(p));
+  for (const g of s.gossip ?? []) refs.peers.appendChild(peerRow({ ...g, tag: 'gossip' }));
 
-    const icon = document.createElement('i');
-    if (!p.ok) icon.style.color = 'var(--error)';
-    icon.textContent = p.ok ? 'cloud_done' : 'cloud_off';
-
-    const box = document.createElement('div');
-    box.className = 'max';
-    const name = document.createElement('strong');
-    name.textContent = p.name ?? '';
-    const url = document.createElement('p');
-    url.className = 'small-text muted no-margin';
-    url.textContent = p.note || p.url || '';
-    box.append(name, url);
-
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.textContent = p.ok ? 'agrees' : 'differs';
-
-    row.append(icon, box, chip);
-    refs.peers.appendChild(row);
+  // A feed peers can see and this node cannot is discovery, not tampering: one
+  // peer reporting it is a member joining. It is listed plainly and never
+  // raised as an alarm, because crying wolf is how a real warning gets ignored.
+  refs.missing.innerHTML = '';
+  const missing = s.missingFeeds ?? [];
+  if (missing.length === 0) {
+    const none = document.createElement('p');
+    none.className = 'small-text muted no-margin';
+    none.textContent = 'none';
+    refs.missing.appendChild(none);
   }
+  for (const m of missing) refs.missing.appendChild(missingRow(m));
 
   if (s.anchors > 0 && !refs.room.dataset.set) refs.room.dataset.set = '1';
+}
+
+// One row of the peers panel. A git remote and a gossip peer are the same
+// shape here -- a name, what it says, and whether this node agrees -- so they
+// share one renderer and differ only by the tag.
+function peerRow(p) {
+  const row = document.createElement('div');
+  row.className = 'kv';
+
+  const icon = document.createElement('i');
+  if (!p.ok) icon.style.color = 'var(--error)';
+  icon.textContent = p.ok ? 'cloud_done' : 'cloud_off';
+
+  const box = document.createElement('div');
+  box.className = 'max';
+  const name = document.createElement('strong');
+  name.textContent = p.tag ? `${p.name ?? ''} · ${p.tag}` : p.name ?? '';
+  const sub = document.createElement('p');
+  sub.className = 'small-text muted no-margin';
+  sub.textContent = p.note || p.url || '';
+  box.append(name, sub);
+
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  chip.textContent = p.ok ? 'agrees' : 'differs';
+
+  row.append(icon, box, chip);
+  return row;
+}
+
+function missingRow(m) {
+  const row = document.createElement('div');
+  row.className = 'kv';
+
+  const icon = document.createElement('i');
+  icon.className = 'tertiary-text';
+  icon.textContent = 'visibility';
+
+  const box = document.createElement('div');
+  box.className = 'max';
+  const strong = document.createElement('strong');
+  strong.textContent = `feed ${String(m.feed ?? '').replace('refs/feeds/', '').slice(0, 6)}`;
+  const sub = document.createElement('p');
+  sub.className = 'small-text muted no-margin';
+  sub.textContent = 'not held here';
+  box.append(strong, sub);
+
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  chip.textContent = `${m.peers} peer${m.peers === 1 ? '' : 's'}`;
+
+  row.append(icon, box, chip);
+  return row;
 }
 
 export function room(id) {

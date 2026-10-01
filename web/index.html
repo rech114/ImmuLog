@@ -114,9 +114,16 @@
       <section class="view" data-view="peers">
         <article class="border round medium-padding">
           <h5><i>lan</i> Peers</h5>
-          <p class="small-text muted no-margin">Multiple sources for the same feed. Agreement with any one of them sustains consensus.</p>
+          <p class="small-text muted no-margin">Git remotes carry feeds; gossip peers carry views. A view costs one request, so the set of parties who can contradict you is not limited to the remotes in the configuration.</p>
           <div class="divider"></div>
           <div id="peers"></div>
+        </article>
+
+        <article class="border round medium-padding">
+          <h6 class="section-head"><i>visibility</i> Reported by peers, not held here</h6>
+          <p class="small-text muted no-margin">A feed other nodes can see and this one cannot. This is discovery, not tampering -- one peer knowing about it is a member joining, so it is never raised as an alarm.</p>
+          <div class="divider"></div>
+          <div id="missing-feeds"></div>
         </article>
       </section>
 

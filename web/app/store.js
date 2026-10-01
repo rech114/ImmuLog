@@ -9,6 +9,11 @@ const listeners = new Set();
 
 let cursors = { anchor: '', snapshot: '', anchoredAt: '', identity: null, encryption: null };
 let peers = [];
+// Gossip peers are compared by *view*, not feed by feed: they can agree on
+// every feed they carry and still be carrying fewer feeds than somebody else.
+// The two pictures are kept apart for exactly that reason.
+let gossip = [];
+let missingFeeds = [];
 
 const emit = (kind, payload) => {
   for (const fn of listeners) fn(kind, payload);
@@ -45,7 +50,9 @@ function apply(evt) {
       byOid.set(item.oid, item);
       items.push(item);
       cursors.anchor = item.oid;
-      cursors.snapshot = item.oid;
+      // cursors.snapshot is deliberately NOT set here. It is the digest peers
+      // are compared against, not the newest message: pointing it at a message
+      // OID made the integrity panel claim a comparison it had not made.
       emit('add', item);
       return item;
     }
@@ -80,9 +87,19 @@ function apply(evt) {
         cursors.anchoredAt = evt.anchoredAt || cursors.anchoredAt;
         cursors.identity = evt.identity || cursors.identity;
         peers = evt.peers || peers;
+        gossip = evt.gossip || gossip;
+        missingFeeds = evt.missingFeeds || missingFeeds;
       }
       if (evt.encryption) cursors.encryption = evt.encryption;
       else if (evt.type === 'encryption') cursors.encryption = evt;
+      emit('meta', stats());
+      return null;
+    }
+
+    // The digest moved, so the view every peer is compared against changed.
+    // Fires on change only -- the server sends this one, not a heartbeat.
+    case 'snapshot': {
+      cursors.snapshot = evt.digest || cursors.snapshot;
       emit('meta', stats());
       return null;
     }
@@ -129,6 +146,8 @@ export const stats = () => ({
   encryption: cursors.encryption,
   alarms: items.filter((i) => i.kind === 'alarm'),
   peers,
+  gossip,
+  missingFeeds,
 });
 
 export function subscribe(fn) {

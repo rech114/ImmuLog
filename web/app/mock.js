@@ -20,7 +20,18 @@ const script = (send) => [
       { name: 'origin', url: 'git@node-a', ok: true },
       { name: 'mirror', url: 'git@node-b', ok: true },
       { name: "alice's machine", url: 'git@10.0.0.7:immulog.git', ok: false, note: 'inconsistent with the local witness anchor' },
-    ] }],
+    ],
+    // The view comparison, kept apart from the git-sync picture above.
+    // Peer URLs are scheme-less on purpose: `web/` may not contain an external
+    // URL (CI enforces it), and the server accepts `host:port` anyway.
+    gossip: [
+      { name: 'origin', url: 'node-a:8082', ok: true, note: 'agrees', feeds: 4 },
+      { name: 'mirror', url: 'node-b:8082', ok: true, note: 'knows feeds this node does not', missingHere: [`refs/feeds/${ALICE}`] },
+      { name: 'relay', url: 'node-c:8082', ok: false, note: 'disagrees about 1 feed(s)', diverged: [`refs/feeds/${BOB}`] },
+    ],
+    missingFeeds: [{ feed: `refs/feeds/${ALICE}`, peers: 2 }] }],
+
+  [700, { type: 'snapshot', digest: GENESIS, feeds: 4 }],
 
   [300, { type: 'msg', oid: GENESIS, seq: 1, author: 'alice', body: 'Up. This one is the genesis commit.' }],
 

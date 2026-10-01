@@ -21,6 +21,7 @@ The web UI presents the same history as a chat. Messages can be signed, feeds ca
 - Signed commits with Git SSH signing
 - Local witness anchors for detecting rewritten history
 - Multi-remote synchronization with quarantine and fast-forward-only updates
+- Snapshot gossip: whole-view comparison with peers, which reaches a feed a relay never showed you
 - Split-view detection between peers
 - External anchoring through a small HTTP publisher interface
 - Optional message-body encryption with per-epoch keys
@@ -117,6 +118,14 @@ Each node publishes its own feed and fetches feeds from its configured remotes.
 Network data is fetched into quarantine refs first. A feed is promoted only after its history passes the local checks and the update can be applied as a fast-forward.
 
 When two remotes provide incompatible histories for the same feed, ImmuLog reports a split view instead of choosing one silently.
+
+That comparison is per feed, so it cannot see a feed a source simply never mentions. Gossip covers that gap: point `IMMULOG_PEERS` at a few nodes and each one's whole view is compared with theirs once per interval.
+
+```bash
+IMMULOG_PEERS="alice=http://10.0.0.7:8082,carol=http://10.0.0.9:8082" ./immulog
+```
+
+A view costs one request, so gossip can reach peers you do not fetch from. It is **read-only**: nothing a peer claims is ever promoted into `refs/feeds/*`. A feed only peers can see is listed under Peers, never raised as an alarm. And with fewer than three peers a disagreement cannot be attributed to either side, which the server says at startup.
 
 ## Message-body encryption
 
@@ -295,6 +304,8 @@ ImmuLog keeps these operations behind `core/gitx` instead of implementing Git ob
 | `IMMULOG_REMOTES` | unset | Comma-separated Git sync sources, using `url` or `name=url` |
 | `IMMULOG_ANCHOR_URL` | unset | Optional external anchoring service |
 | `IMMULOG_SYNC_INTERVAL` | `5s` | Synchronization interval |
+| `IMMULOG_PEERS` | unset | Comma-separated gossip peers, `url` or `name=url`, where the URL is an HTTP base such as `http://host:8082` |
+| `IMMULOG_GOSSIP_INTERVAL` | `5s` | Snapshot gossip interval |
 | `IMMULOG_ANCHOR_INTERVAL` | `60s` | External anchoring interval |
 | `IMMULOG_ENCRYPT` | unset | Set to `1` to enable message-body encryption |
 
@@ -343,6 +354,7 @@ immulog/
 │       ├── verify.go
 │       ├── snapshot.go
 │       ├── sync.go
+│       ├── gossip.go
 │       ├── anchor.go
 │       ├── crypto.go
 │       ├── epoch.go
