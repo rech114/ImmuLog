@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-// store.js —— 唯一持有状态的地方。
-// 不许碰 DOM，不许碰网络。对外只有 upsert / list / get / subscribe。
+// store.js -- the only place that holds state.
+// It must not touch the DOM and must not touch the network. Its whole surface
+// is upsert / list / get / subscribe.
 
 const byOid = new Map(); // oid -> item
-const items = [];        // 有序：msg 与 alarm 混排，就是时间线
+const items = [];        // ordered: messages and alarms interleaved = the timeline
 const listeners = new Set();
 
 let cursors = { anchor: '', snapshot: '', anchoredAt: '', identity: null, encryption: null };
@@ -15,11 +16,12 @@ const emit = (kind, payload) => {
 
 const short = (oid) => (oid || '').slice(0, 6);
 
-// ── 写入 ─────────────────────────────────────────────────────────
+// ── Writes ──────────────────────────────────────────────────────
 
 export function upsert(evt) {
   const out = apply(evt);
-  // 任何一次变更都刷新元信息，否则见证锚计数会停在 hello 那一刻的 0
+  // Refresh metadata on every change, or the witness anchor count would freeze
+  // at the 0 it had when `hello` arrived
   if (out || evt.type === 'hello') emit('meta', stats());
   return out;
 }
@@ -27,7 +29,7 @@ export function upsert(evt) {
 function apply(evt) {
   switch (evt.type) {
     case 'msg': {
-      if (byOid.has(evt.oid)) return null; // 乐观投递与 SSE 广播靠 OID 去重
+      if (byOid.has(evt.oid)) return null; // optimistic delivery and the SSE broadcast dedupe by OID
       const item = {
         kind: 'msg',
         oid: evt.oid,
@@ -51,8 +53,9 @@ function apply(evt) {
     case 'retract': {
       const target = byOid.get(evt.retracts);
       if (!target) return null;
-      // 撤回只对**同一条 feed** 内的消息生效：撤回是作者的权利。
-      // 双方都带 feed 才判定；缺信息时不拦（兼容旧事件）。
+      // A retraction only applies to messages in the **same feed**: it is the
+      // author's right. Judged only when both sides carry a feed; missing
+      // information never blocks (keeps older events working).
       if (evt.feed && target.feed && evt.feed !== target.feed) return null;
       target.state = 'retracted';
       target.reason = evt.reason || '';
@@ -93,11 +96,12 @@ export function receive(list) {
   return list.map(upsert).filter(Boolean);
 }
 
-// 乐观投递落地：临时项原地换成正身，位置不动（用户看到的气泡不会跳）
+// Optimistic delivery lands: the placeholder becomes the real item in place, so
+// the bubble the user is looking at does not jump.
 export function confirm(tempOid, evt) {
   const item = byOid.get(tempOid);
   if (!item) return null;
-  if (byOid.has(evt.oid)) { // 广播已经先到了，撤掉临时的
+  if (byOid.has(evt.oid)) { // the broadcast beat us here; drop the placeholder
     const i = items.indexOf(item);
     if (i >= 0) items.splice(i, 1);
     byOid.delete(tempOid);
@@ -111,7 +115,7 @@ export function confirm(tempOid, evt) {
   return item;
 }
 
-// ── 读取 ─────────────────────────────────────────────────────────
+// ── Reads ───────────────────────────────────────────────────────
 
 export const list = () => items;
 export const get = (oid) => byOid.get(oid);

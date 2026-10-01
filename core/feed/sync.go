@@ -10,13 +10,14 @@ import (
 	"immulog/core/gitx"
 )
 
-// Remote 是一个同步源。URL 走 git 自己的 transport（ssh / https / file / git）。
+// Remote is one sync source. The URL uses git's own transports
+// (ssh / https / file / git).
 type Remote struct {
 	Name string
 	URL  string
 }
 
-// PeerView 是本机看到的某个远端的状况。
+// PeerView is how one remote currently looks to this node.
 type PeerView struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
@@ -25,31 +26,38 @@ type PeerView struct {
 	Note string `json:"note,omitempty"`
 }
 
-// SyncResult 是一次同步的产物。
+// SyncResult is the product of one sync.
 type SyncResult struct {
-	Advanced []Message  // 这次真正新到的消息（已按链上顺序）
-	Alarms   []Verdict  // 检测到的不一致
-	Peers    []PeerView // 每个远端的状况
-	Reached  int        // 可达的远端数
+	Advanced []Message  // messages that are genuinely new this round, in chain order
+	Alarms   []Verdict  // detected inconsistencies
+	Peers    []PeerView // the state of each remote
+	Reached  int        // number of reachable remotes
 }
 
-// Sync 从所有远端拉取、逐个 feed 校验、只允许快进地推进本地状态。
+// Sync pulls from every remote, verifies feed by feed, and advances local
+// state with fast-forwards only.
 //
-// remotes 的 Name 必须两两不同 —— 它决定隔离区槽位，重名会互相覆盖。
-// （main.go 的 parseRemotes 已经去重；直接调用的调用方需自己保证。）
+// Remote Names must be pairwise distinct -- the name selects a quarantine slot,
+// and duplicates would overwrite each other. (main.go's parseRemotes already
+// dedupes; direct callers must guarantee it themselves.)
 //
-// 四层纪律（docs/DESIGN.md §8.10 / §6.3 / §4.3）：
+// Four rules (docs/DESIGN.md §8.10 / §6.3 / §4.3):
 //
-//  1. **网络输入先进隔离区** refs/quarantine/<槽位>/ —— 绝不直接写可信状态
-//  2. **每条 feed 都拿本机见证锚比** —— 外来历史同样不许被静默改写
-//  3. **只允许快进** —— 非快进一律不动本地，并留下告警
-//  4. **密钥链条必须连续** —— 换密钥只能经由旧密钥签名的轮换公告
+//  1. **Network input lands in the quarantine first** refs/quarantine/<slot>/ --
+//     it never writes trusted state directly
+//  2. **Every feed is compared against the local witness anchor** -- foreign
+//     history may not be silently rewritten either
+//  3. **Fast-forwards only** -- anything else leaves local state untouched and
+//     raises an alarm
+//  4. **The key chain must stay continuous** -- a key may only change through a
+//     rotation notice signed by the old key
 //
-// 远端之间互相矛盾（两个源对同一条 feed 给出无共同后代的两个链尾）判为分裂视图。
+// Remotes that contradict each other (two sources giving tips for the same feed
+// with no common descendant) are reported as a split view.
 func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (SyncResult, error) {
 	res := SyncResult{}
 
-	// ① 拉到隔离区
+	// 1) Pull into the quarantine
 	reachable := make(map[string]bool, len(remotes))
 	for _, rm := range remotes {
 		slot := FeedID(rm.Name)
@@ -61,10 +69,10 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 		res.Reached++
 	}
 
-	// ② 按 feed 归拢各远端的说法
+	// 2) Group each remote's claims by feed
 	type claim struct{ peer, tip string }
 	claims := map[string][]claim{}
-	slots := map[string]string{} // 槽位 → 远端名
+	slots := map[string]string{} // slot -> remote name
 	for _, rm := range remotes {
 		slots[FeedID(rm.Name)] = rm.Name
 	}
@@ -86,9 +94,9 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 		claims[ref] = append(claims[ref], claim{peer: peer, tip: r.OID})
 	}
 
-	bad := map[string]string{} // 远端名 → 问题描述
+	bad := map[string]string{} // remote name -> problem description
 
-	// ③ 逐 feed 校验并推进
+	// 3) Verify and advance, feed by feed
 	feeds := make([]string, 0, len(claims))
 	for ref := range claims {
 		feeds = append(feeds, ref)
@@ -110,7 +118,8 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 			if !reachable[cl.peer] {
 				continue
 			}
-			// 与**本机见证锚**比：外来历史同样不许被静默改写
+			// Compare against the **local witness anchor**: foreign history may
+			// not be silently rewritten either
 			if w != "" {
 				fwd, err := repo.IsAncestor(ctx, w, cl.tip)
 				if err != nil {
@@ -126,11 +135,12 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 						Feed: ref, Peer: cl.peer, Reason: reason,
 						Witness: w, Current: cl.tip,
 					})
-					bad[cl.peer] = "与本机见证锚不一致"
+					bad[cl.peer] = "inconsistent with the local witness anchor"
 					continue
 				}
 			}
-			// 与**其它远端**比：两个源互相矛盾就是分裂视图
+			// Compare against **other remotes**: two sources contradicting each
+			// other is a split view
 			switch {
 			case best == "" || best == cl.tip:
 				best = cl.tip
@@ -144,7 +154,7 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 						Feed: ref, Peer: cl.peer, Reason: ReasonSplit,
 						Witness: best, Current: cl.tip,
 					})
-					bad[cl.peer] = "与其它远端互相矛盾"
+					bad[cl.peer] = "contradicts another remote"
 				}
 			}
 		}
@@ -152,7 +162,8 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 		if best == "" || best == local {
 			continue
 		}
-		// 只允许快进：非快进一律不动本地（告警已在上面产生）
+		// Fast-forwards only: anything else leaves local state untouched (the
+		// alarm was already raised above)
 		if local != "" {
 			fwd, err := repo.IsAncestor(ctx, local, best)
 			if err != nil || !fwd {
@@ -160,8 +171,10 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 			}
 		}
 
-		// 密钥链条：换密钥必须经由旧密钥签名的轮换公告。
-		// 注意这里用 best（OID）而不是 ref —— ref 此刻还指向 local，区间会是空的。
+		// Key chain: a key may only change via a rotation notice signed by the
+		// old key.
+		// Note this uses best (an OID), not ref -- ref still points at local
+		// right now, so the range would be empty.
 		raw, err := repo.LogRange(ctx, best, local, maxNew)
 		if err != nil {
 			continue
@@ -174,8 +187,8 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 			kv.Feed = ref
 			kv.Peer = claims[ref][0].peer
 			res.Alarms = append(res.Alarms, kv)
-			bad[kv.Peer] = "密钥链条断裂"
-			continue // 拒绝推进
+			bad[kv.Peer] = "broken key chain"
+			continue // refuse to advance
 		}
 
 		if err := repo.UpdateRef(ctx, ref, best, local); err != nil {
@@ -187,12 +200,12 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 		res.Advanced = append(res.Advanced, Decode(raw, ref, Opener(ctx, repo))...)
 	}
 
-	// ④ 汇总远端状况
+	// 4) Summarise each remote's state
 	for _, rm := range remotes {
 		v := PeerView{Name: rm.Name, URL: rm.URL, OK: reachable[rm.Name]}
 		switch {
 		case !reachable[rm.Name]:
-			v.Note = "不可达"
+			v.Note = "unreachable"
 		default:
 			if note, ok := bad[rm.Name]; ok {
 				v.OK, v.Note = false, note
@@ -203,10 +216,11 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 	return res, nil
 }
 
-// Publish 把本机 feed 推给每个远端。
+// Publish pushes the local feed to every remote.
 //
-// 失败**不致命**：本地提交才是事实，远端只是搬运工。
-// 返回每个远端的错误（成功的为空串），供 UI 显示可达性。
+// Failure is **not fatal**: the local commit is the fact, a remote is only a
+// courier. Returns each remote's error (empty string on success) so the UI can
+// show reachability.
 func Publish(ctx context.Context, repo *gitx.Repo, remotes []Remote, feedRef string) map[string]string {
 	out := make(map[string]string, len(remotes))
 	if feedRef == "" {

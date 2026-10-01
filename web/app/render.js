@@ -1,14 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-// render.js —— 唯一碰 document 的地方。
-// 只做三件事：追加、标记撤回、插入告警。没有 diff，因为 append-only 不需要 diff。
+// render.js -- the only place that touches the DOM.
+// It does exactly three things: append, mark retracted, insert an alarm.
+// There is no diffing, because an append-only timeline needs none.
 
-// 形状即状态：MD3 Expressive 的形状语汇，全部由 Beer CSS 提供（mask-image 到 SVG）
+// Shape is state: the MD3 Expressive shape vocabulary, all provided by Beer CSS
+// (mask-image onto SVG).
 const SHAPE = {
-  verified: 'gem',              // 完整、确定
-  pending: 'loading-indicator', // 乐观投递中（旋转由 CSS 负责）
-  unverified: 'circle',         // 未知
-  retracted: 'slanted',         // 被切掉
-  alarm: 'burst',               // 炸开
+  verified: 'gem',              // whole, settled
+  pending: 'loading-indicator', // optimistic delivery in flight (spinning is CSS)
+  unverified: 'circle',         // unknown
+  retracted: 'slanted',         // cut away
+  alarm: 'burst',               // blown open
 };
 
 const ANIM = { retracted: 'swap', alarm: 'swap' };
@@ -41,7 +43,7 @@ const refs = {
 const shapeClass = (state) =>
   ['shape', SHAPE[state] ?? 'circle', ANIM[state]].filter(Boolean).join(' ');
 
-// ── 时间线 ───────────────────────────────────────────────────────
+// ── Timeline ────────────────────────────────────────────────────
 
 export function item(it) {
   const el = it.kind === 'alarm' ? alarmEl(it) : messageEl(it);
@@ -61,7 +63,7 @@ export function update(it) {
   }
   if (it.state === 'retracted') {
     const note = el.querySelector('.strike-note');
-    if (note) note.textContent = it.reason ? `已撤回 · ${it.reason}` : '已撤回';
+    if (note) note.textContent = it.reason ? `retracted · ${it.reason}` : 'retracted';
   }
 }
 
@@ -101,7 +103,7 @@ function messageEl(it) {
 
   el.querySelector('.who').textContent = it.author;
   el.querySelector('.text').textContent = it.locked
-    ? '（无法解密 —— 密钥已被丢弃，或者你不是这个世代的收件人）'
+    ? '(cannot decrypt -- the key was discarded, or you are not a recipient of this epoch)'
     : it.body;
   paint(el, it);
 
@@ -116,10 +118,10 @@ function messageEl(it) {
 function paint(el, it) {
   el.querySelector('.meta').textContent = `#${it.seq} · ${it.oid.slice(0, 6)}`;
   const enc = it.epoch
-    ? `\n加密世代  ${it.epoch}${it.locked ? '（本机读不了）' : ''}`
+    ? `\nepoch     ${it.epoch}${it.locked ? ' (unreadable here)' : ''}`
     : '';
   el.querySelector('.detail').textContent =
-    `对象地址  ${it.oid}\n签名      ${it.sig || '（未签名）'}${enc}\n状态      ${it.state}`;
+    `object    ${it.oid}\nsignature ${it.sig || '(unsigned)'}${enc}\nstate     ${it.state}`;
 }
 
 function alarmEl(it) {
@@ -135,7 +137,7 @@ function alarmEl(it) {
   box.className = 'max';
 
   const h = document.createElement('h6');
-  h.textContent = it.title || '历史被改写'; // 服务端来的字符串一律 textContent
+  h.textContent = it.title || 'History rewritten'; // server strings always go through textContent
 
   const p = document.createElement('p');
   p.className = 'small-text no-margin';
@@ -143,11 +145,11 @@ function alarmEl(it) {
 
   const m = document.createElement('p');
   m.className = 'mono muted no-margin';
-  m.textContent = `本地 ${it.local || '——'} · 远端 ${it.remote || '——'}`;
+  m.textContent = `local ${it.local || '--'} · remote ${it.remote || '--'}`;
 
   const nav = document.createElement('nav');
   nav.className = 'group';
-  for (const [label, cls] of [['查看证据', 'small border round'], ['保留本地副本', 'small round']]) {
+  for (const [label, cls] of [['View evidence', 'small border round'], ['Keep local copy', 'small round']]) {
     const b = document.createElement('button');
     b.className = cls;
     b.textContent = label;
@@ -157,7 +159,7 @@ function alarmEl(it) {
   box.append(h, p, m, nav);
   el.append(shape, box);
 
-  refs.alarmLog.querySelector('.placeholder')?.remove(); // 清掉初始的「无」
+  refs.alarmLog.querySelector('.placeholder')?.remove(); // clear the initial "none"
   refs.alarmLog.prepend(evidenceEl(it));
   return el;
 }
@@ -173,46 +175,48 @@ function evidenceEl(it) {
   const box = document.createElement('div');
   box.className = 'max';
   const strong = document.createElement('strong');
-  strong.textContent = it.title || '历史被改写';
+  strong.textContent = it.title || 'History rewritten';
   const mono = document.createElement('p');
   mono.className = 'mono muted no-margin';
-  mono.textContent = `${it.local || ''} → ${it.remote || ''}`;
+  mono.textContent = `${it.local || ''} -> ${it.remote || ''}`;
   box.append(strong, mono);
 
   row.append(icon, box);
   return row;
 }
 
-// ── 元信息 ───────────────────────────────────────────────────────
+// ── Metadata ────────────────────────────────────────────────────
 
 export function meta(s) {
   refs.anchorCount.textContent = s.anchors;
-  refs.snapshot.textContent = s.snapshot || '——';
-  refs.anchoredAt.textContent = s.anchoredAt || '尚未锚定';
-  refs.anchorLine.textContent = s.anchor ? `最新锚点 ${s.anchor}` : '尚未建立';
+  refs.snapshot.textContent = s.snapshot || '--';
+  refs.anchoredAt.textContent = s.anchoredAt || 'not anchored yet';
+  refs.anchorLine.textContent = s.anchor ? `latest anchor ${s.anchor}` : 'not established';
 
-  // 签名身份：未签名时明说"可被冒名"，不粉饰
+  // Signing identity: when unsigned, say plainly that impersonation is possible
+  // rather than glossing over it
   const id = s.identity;
   if (id) {
-    refs.identityChip.textContent = id.signed ? '已签名' : '未签名';
+    refs.identityChip.textContent = id.signed ? 'signed' : 'unsigned';
     refs.identityChip.classList.toggle('error', !id.signed);
     refs.identityLine.textContent = id.signed
-      ? `签名密钥 ${id.key || '（读取中）'}`
-      : '未配置 user.signingkey，身份可被冒名';
+      ? `signing key ${id.key || '(reading)'}`
+      : 'no user.signingkey configured, identity can be impersonated';
   }
 
-  // 加密世代：密钥丢了不等于消息不存在，所以这里说的是"能不能读"，不是"有没有"
+  // Encryption epoch: a lost key does not mean the message never existed, so
+  // this reports readability, not existence
   const enc = s.encryption;
   if (enc) {
     if (!enc.enabled) {
-      refs.encChip.textContent = '未启用';
-      refs.encLine.textContent = '正文以明文存进 git 对象，任何拿到副本的人都能读';
+      refs.encChip.textContent = 'off';
+      refs.encLine.textContent = 'bodies are plaintext in the git objects; anyone with a copy can read them';
     } else {
-      refs.encChip.textContent = `世代 ${enc.epoch}`;
+      refs.encChip.textContent = `epoch ${enc.epoch}`;
       refs.encChip.classList.toggle('error', !enc.held);
       refs.encLine.textContent = enc.held
-        ? `${enc.members} 名收件人 · 密文随仓库复制，只有成员解得开`
-        : '密钥已被本机丢弃：密文仍在链上，但谁也解不开了';
+        ? `${enc.members} recipient(s) · ciphertext replicates with the repo, only members can open it`
+        : 'the key was discarded here: the ciphertext is still on the chain, but nobody can open it';
     }
   }
 
@@ -236,7 +240,7 @@ export function meta(s) {
 
     const chip = document.createElement('span');
     chip.className = 'chip';
-    chip.textContent = p.ok ? '一致' : '分歧';
+    chip.textContent = p.ok ? 'agrees' : 'differs';
 
     row.append(icon, box, chip);
     refs.peers.appendChild(row);
@@ -247,17 +251,18 @@ export function meta(s) {
 
 export function room(id) {
   refs.room.textContent = id;
-  // 主题色 = 房间的创世哈希：两个房间同色 ⇒ 历史同源
+  // Theme colour = the room's genesis hash: two rooms of the same colour share
+  // the same origin
   theme.set(`#${id}`);
 }
 
 export function link(state) {
   refs.link.dataset.state = state;
   refs.link.textContent = state === 'up' ? 'cloud_done' : 'cloud_off';
-  refs.link.title = state === 'up' ? '已连接' : '连接中断，正在重连';
+  refs.link.title = state === 'up' ? 'connected' : 'disconnected, reconnecting';
 }
 
-// ── 视图 / 交互 ─────────────────────────────────────────────────
+// ── Views and interaction ───────────────────────────────────────
 
 export function view(name) {
   for (const s of document.querySelectorAll('.view')) s.classList.toggle('active', s.dataset.view === name);
@@ -290,19 +295,20 @@ export function onSubmitTheme(fn) {
   refs.theme.addEventListener('click', fn);
 }
 
-// Beer 的 JS 是异步模块，不一定在首次需要时就绪 —— 但绝不无限轮询
+// Beer's JS is an async module and may not be ready the first time we need it --
+// but never poll forever
 const theme = (() => {
   let tries = 0;
   let pending = null;
   const apply = () => {
     if (typeof ui !== 'function') {
-      if (tries++ >= 15) return; // ~1.8s 后放弃，不打扰用户
+      if (tries++ >= 15) return; // give up after ~1.8s; do not pester the user
       return void setTimeout(apply, 120);
     }
     try {
       if (pending?.seed) ui('theme', pending.seed);
       ui('mode', pending?.mode ?? 'dark');
-    } catch { /* 种子无效就用 Beer 默认 */ }
+    } catch { /* invalid seed: fall back to Beer's default */ }
   };
   return {
     set(seed) { pending = { ...pending, seed }; apply(); },
@@ -313,7 +319,7 @@ const theme = (() => {
 export function mode(m) {
   document.body.classList.toggle('dark', m === 'dark');
   refs.theme.firstElementChild.textContent = m === 'dark' ? 'light_mode' : 'dark_mode';
-  refs.theme.setAttribute('aria-label', m === 'dark' ? '切换到浅色' : '切换到深色');
+  refs.theme.setAttribute('aria-label', m === 'dark' ? 'Switch to light' : 'Switch to dark');
   theme.mode(m);
 }
 
@@ -324,7 +330,7 @@ export function toast(text) {
   toast._t = setTimeout(() => refs.toast.classList.remove('active'), 3200);
 }
 
-// main 才是滚动容器（app shell），不是 window
+// main is the scroll container (app shell), not the window
 function stick() {
   const el = refs.main;
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 240) {

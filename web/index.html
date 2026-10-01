@@ -1,6 +1,6 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 
 <head>
   <meta charset="UTF-8">
@@ -29,18 +29,18 @@
     <nav class="toolbar">
       <div class="shape gem" id="mark" data-state="verified"></div>
       <h6 class="brand">ImmuLog</h6>
-      <div class="chip" id="room" title="房间身份 = 创世 commit 的哈希前 6 位">
-        <i>tag</i><span id="room-id">——</span>
+      <div class="chip" id="room" title="Room identity = first 6 hex of the genesis commit hash">
+        <i>tag</i><span id="room-id">--</span>
       </div>
       <div class="max"></div>
-      <i id="link" class="link-icon" title="已连接">cloud_done</i>
-      <button class="circle transparent" id="theme" aria-label="切换主题"><i>light_mode</i></button>
+      <i id="link" class="link-icon" title="connected">cloud_done</i>
+      <button class="circle transparent" id="theme" aria-label="Toggle theme"><i>light_mode</i></button>
     </nav>
 
     <nav class="group" id="views">
-      <button class="active" data-view="chat">消息</button>
-      <button data-view="integrity">完整性</button>
-      <button data-view="peers">对端</button>
+      <button class="active" data-view="chat">Messages</button>
+      <button data-view="integrity">Integrity</button>
+      <button data-view="peers">Peers</button>
     </nav>
   </header>
 
@@ -49,20 +49,20 @@
 
       <section class="view active" data-view="chat">
         <div id="stream"></div>
-        <p class="empty no-margin" id="chat-empty"><i>forum</i>还没有消息</p>
+        <p class="empty no-margin" id="chat-empty"><i>forum</i>No messages yet</p>
       </section>
 
       <section class="view" data-view="integrity">
         <article class="border round medium-padding">
-          <h5><i>shield</i> 完整性</h5>
-          <p class="small-text muted no-margin">本机独立维护的见证记录。服务器无法篡改这里。</p>
+          <h5><i>shield</i> Integrity</h5>
+          <p class="small-text muted no-margin">Witness records kept on this machine. No server can alter them.</p>
 
           <div class="divider"></div>
           <div class="kv">
             <i class="primary-text">bookmark</i>
             <div class="max">
-              <strong>本地见证锚</strong>
-              <p class="small-text muted no-margin" id="anchor-line">尚未建立</p>
+              <strong>Local witness anchor</strong>
+              <p class="small-text muted no-margin" id="anchor-line">not established</p>
             </div>
             <span class="chip"><span id="anchor-count">0</span></span>
           </div>
@@ -71,53 +71,53 @@
           <div class="kv">
             <i class="tertiary-text">fingerprint</i>
             <div class="max">
-              <strong>快照哈希</strong>
-              <p class="small-text muted no-margin">与对端比较，检测分裂视图</p>
+              <strong>Snapshot digest</strong>
+              <p class="small-text muted no-margin">Compared with peers to detect a split view</p>
             </div>
-            <span class="mono" id="snapshot">——</span>
+            <span class="mono" id="snapshot">--</span>
           </div>
 
           <div class="divider"></div>
           <div class="kv">
             <i class="secondary-text">schedule</i>
             <div class="max">
-              <strong>外部锚定</strong>
-              <p class="small-text muted no-margin">最近一次时间戳证明</p>
+              <strong>External anchoring</strong>
+              <p class="small-text muted no-margin">Most recent timestamp proof</p>
             </div>
-            <span class="small-text muted no-margin" id="anchored-at">——</span>
+            <span class="small-text muted no-margin" id="anchored-at">--</span>
           </div>
 
           <div class="divider"></div>
           <div class="kv">
             <i>key</i>
             <div class="max">
-              <strong>签名身份</strong>
-              <p class="small-text muted no-margin" id="identity-line">——</p>
+              <strong>Signing identity</strong>
+              <p class="small-text muted no-margin" id="identity-line">--</p>
             </div>
-            <span class="chip" id="identity-chip">——</span>
+            <span class="chip" id="identity-chip">--</span>
           </div>
 
           <div class="divider"></div>
           <div class="kv">
             <i>lock</i>
             <div class="max">
-              <strong>端到端加密</strong>
-              <p class="small-text muted no-margin" id="enc-line">——</p>
+              <strong>End-to-end encryption</strong>
+              <p class="small-text muted no-margin" id="enc-line">--</p>
             </div>
-            <span class="chip" id="enc-chip">——</span>
+            <span class="chip" id="enc-chip">--</span>
           </div>
         </article>
 
         <article class="border round medium-padding">
-          <h6 class="section-head"><i>warning</i> 告警</h6>
-          <div id="alarm-log"><p class="small-text muted placeholder no-margin">无</p></div>
+          <h6 class="section-head"><i>warning</i> Alarms</h6>
+          <div id="alarm-log"><p class="small-text muted placeholder no-margin">none</p></div>
         </article>
       </section>
 
       <section class="view" data-view="peers">
         <article class="border round medium-padding">
-          <h5><i>lan</i> 对端</h5>
-          <p class="small-text muted no-margin">同一 feed 的多个来源。任一致即维持共识。</p>
+          <h5><i>lan</i> Peers</h5>
+          <p class="small-text muted no-margin">Multiple sources for the same feed. Agreement with any one of them sustains consensus.</p>
           <div class="divider"></div>
           <div id="peers"></div>
         </article>
@@ -129,9 +129,9 @@
   <footer id="dock">
     <nav class="toolbar">
       <div class="field border round max">
-        <input id="input" autocomplete="off" placeholder="说点什么…（回车发送）" aria-label="消息内容">
+        <input id="input" autocomplete="off" placeholder="Say something (Enter to send)" aria-label="Message body">
       </div>
-      <button class="circle" id="send" aria-label="发送"><i>send</i></button>
+      <button class="circle" id="send" aria-label="Send"><i>send</i></button>
     </nav>
   </footer>
 

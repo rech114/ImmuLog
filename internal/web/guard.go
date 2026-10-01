@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// guard.go —— 后台巡检：完整性、多源同步、外部锚定。
+// guard.go -- background loops: integrity, multi-source sync, external
+// anchoring.
 //
-// 三件事各一个循环，各一个间隔。它们产生的告警不是 toast，
-// 而是**插进时间线里的一条封条**（docs/DESIGN.md §8.5）：客户端渲染成
-// 不可自动消失的卡片，攻击者删不掉。
+// Three jobs, three loops, three intervals. The alarms they raise are not
+// toasts -- they are **a notice inserted into the timeline** (docs/DESIGN.md
+// §8.5): the client renders them as cards that never auto-dismiss, and an
+// attacker cannot delete them.
 package web
 
 import (
@@ -15,17 +17,19 @@ import (
 	"immulog/core/feed"
 )
 
-// 后台循环的默认间隔。环境变量可覆盖（测试与运维都靠它）。
+// Default intervals for the background loops. Overridable by environment
+// variable (both tests and operations rely on that).
 const (
 	IntegrityInterval = 5 * time.Second
 	SyncInterval      = 5 * time.Second
 	AnchorInterval    = 60 * time.Second
 )
 
-// syncBatch 是单次同步每条 feed 最多取回多少条新消息。
+// syncBatch is how many new messages per feed one sync pulls at most.
 const syncBatch = 200
 
-// State 是本机对外的整体状况：由后台循环维护，由 handler 读取。
+// State is this node's outward-facing condition: maintained by the background
+// loops, read by handlers.
 type State struct {
 	mu     sync.RWMutex
 	snap   feed.Snapshot
@@ -33,7 +37,7 @@ type State struct {
 	peers  []feed.PeerView
 }
 
-// Snapshot 读回当前状况的一份拷贝。
+// Snapshot returns a copy of the current condition.
 func (s *State) Snapshot() (feed.Snapshot, feed.Anchor, []feed.PeerView) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -58,7 +62,8 @@ func (s *State) setPeers(p []feed.PeerView) {
 	s.mu.Unlock()
 }
 
-// Watch 启动三个后台循环并立即返回。ctx 取消即全部退出。
+// Watch starts the three background loops and returns immediately. Cancelling
+// ctx stops all of them.
 func (s *Server) Watch(ctx context.Context, syncEvery, anchorEvery time.Duration) {
 	if syncEvery <= 0 {
 		syncEvery = SyncInterval
@@ -85,11 +90,12 @@ func (s *Server) loop(ctx context.Context, every time.Duration, fn func(context.
 	}
 }
 
-// syncOnce 从所有远端拉取、校验、只允许快进地推进，然后广播增量。
+// syncOnce pulls from every remote, verifies, advances by fast-forward only,
+// then broadcasts the delta.
 func (s *Server) syncOnce(ctx context.Context) {
 	res, err := feed.Sync(ctx, s.repo, s.remotes, syncBatch)
 	if err != nil {
-		s.log.Warn("同步失败", "err", err)
+		s.log.Warn("sync failed", "err", err)
 		return
 	}
 	if len(s.remotes) > 0 {
@@ -101,7 +107,7 @@ func (s *Server) syncOnce(ctx context.Context) {
 		}
 	}
 	for _, v := range res.Alarms {
-		s.log.Warn("检测到不一致",
+		s.log.Warn("inconsistency detected",
 			"feed", v.Feed, "peer", v.Peer, "reason", v.Reason,
 			"witness", v.Witness, "current", v.Current)
 		s.announce(v)
@@ -109,11 +115,12 @@ func (s *Server) syncOnce(ctx context.Context) {
 	s.refreshSnapshot(ctx)
 }
 
-// verifyOnce 巡检本机 feed。本机是唯一写者，正常情况下这里永远静默。
+// verifyOnce inspects the local feed. This machine is the only writer, so in
+// normal operation this stays silent forever.
 func (s *Server) verifyOnce(ctx context.Context) {
 	v, err := s.store.Verify(ctx)
 	if err != nil {
-		s.log.Warn("完整性校验失败", "err", err)
+		s.log.Warn("integrity check failed", "err", err)
 		return
 	}
 	if !v.OK {
@@ -123,15 +130,16 @@ func (s *Server) verifyOnce(ctx context.Context) {
 	s.refreshSnapshot(ctx)
 }
 
-// anchorOnce 把当前快照追加进锚定链，并尽力交给外部服务。
+// anchorOnce appends the current snapshot to the anchor chain and, best-effort,
+// hands it to an external service.
 func (s *Server) anchorOnce(ctx context.Context) {
 	a, err := feed.AnchorNow(ctx, s.repo, s.publisher, s.store.Signed())
 	if err != nil {
-		s.log.Warn("锚定失败", "err", err)
+		s.log.Warn("anchoring failed", "err", err)
 		return
 	}
 	s.state.setAnchor(a)
-	s.log.Info("已锚定快照",
+	s.log.Info("anchored snapshot",
 		"seq", a.Seq, "snapshot", short(a.Snapshot), "external", a.External != "")
 }
 
@@ -141,7 +149,8 @@ func (s *Server) refreshSnapshot(ctx context.Context) {
 	}
 }
 
-// announce 去重后广播告警：同一个问题只播一次，避免刷屏。
+// announce broadcasts an alarm after deduplication: one occurrence per problem,
+// so the timeline does not flood.
 func (s *Server) announce(v feed.Verdict) {
 	key := v.Feed + "|" + v.Reason + "|" + v.Peer + "|" + v.Current
 	s.muGuard.Lock()
@@ -159,27 +168,28 @@ func (s *Server) announce(v feed.Verdict) {
 	}
 }
 
-// alarmEvent 把一次判定翻译成 alarm 事件。判定通过时返回 false。
+// alarmEvent turns a verdict into an alarm event. Returns false when the check
+// passed.
 func alarmEvent(v feed.Verdict) (Event, bool) {
 	if v.OK || v.Reason == "" {
 		return Event{}, false
 	}
 
-	title, detail := "检测到历史改写",
-		"本地见证锚已不是当前链尾的祖先：有人重写了这段历史，且没有留下重写公告。本地副本已保留，拒绝覆盖。"
+	title, detail := "History rewrite detected",
+		"The local witness anchor is no longer an ancestor of the current tip: someone rewrote this history without leaving a rewrite notice. The local copy has been kept and will not be overwritten."
 	switch v.Reason {
 	case feed.ReasonRollback:
-		title = "检测到历史回滚"
-		detail = "消息序号出现倒退：链尾被指回了一个更早的点。"
+		title = "History rollback detected"
+		detail = "Message sequence numbers went backwards: the tip was pointed at an earlier commit."
 	case feed.ReasonSplit:
-		title = "检测到分裂视图"
-		detail = "两个远端对同一条 feed 给出了互不构成祖先关系的链尾：有人在对你和他人说不同的话。"
+		title = "Split view detected"
+		detail = "Two remotes gave tips for the same feed that are not ancestors of one another: someone is telling you and someone else different stories."
 	case feed.ReasonKeyChanged:
-		title = "检测到密钥被换掉"
-		detail = "链上出现了没有轮换公告背书的密钥变更：新密钥既不是上一条的，也没有被上一条签名声明。日志里那条消息不是本人发的。"
+		title = "Signing key swapped"
+		detail = "A key change appeared on the chain with no rotation notice behind it: the new key is neither the previous one nor declared by it. The message that carries it was not written by its author."
 	}
 	if v.Peer != "" {
-		detail += "（来源：" + v.Peer + "）"
+		detail += " (source: " + v.Peer + ")"
 	}
 
 	return Event{

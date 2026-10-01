@@ -126,7 +126,7 @@ func TestSignedMessagesCarryVerifiableIdentity(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("应有 1 条，得到 %d", len(got))
 	}
-	if got[0].Sig != "签名有效" {
+	if got[0].Sig != "signature valid" {
 		t.Fatalf("git 应判定签名有效，得到 %q", got[0].Sig)
 	}
 	if got[0].Key == "" {

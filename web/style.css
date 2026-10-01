@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* ── ImmuLog · MD3 Expressive 皮肤 ────────────────────────────────
-   只做三件事：补 Beer CSS 没有的布局与形状语汇、motion、字体。
-   色板、组件、helper 全部复用 Beer CSS。
+/* ── ImmuLog · MD3 Expressive skin ───────────────────────────────
+   It does three things only: supply the layout and shape vocabulary Beer
+   CSS lacks, motion, and fonts. Palette, components and helpers all come
+   from Beer CSS.
    ──────────────────────────────────────────────────────────────── */
 
 :root {
@@ -15,8 +16,9 @@
 }
 
 /* ── App shell ──────────────────────────────────────────────────
-   不用 position:fixed。改成 flex 三段式，header/footer 正常占位——
-   于是没有 padding 补偿、没有重叠、没有空隙，安全区也自然生效。
+   No position:fixed. A three-part flex column instead, with header and
+   footer taking normal flow -- so there is no padding compensation, no
+   overlap and no gap, and safe-area insets apply naturally.
    ──────────────────────────────────────────────────────────────── */
 
 html,
@@ -70,17 +72,19 @@ main {
   margin: 0 auto;
 }
 
-/* ── 间距 ─────────────────────────────────────────────────────────
-   Beer 有一条特异性 (0,4,1) 的全局规则：
+/* ── Spacing ──────────────────────────────────────────────────────
+   Beer ships a global rule with specificity (0,4,1):
 
      :not(.grid,nav,.row) > :not(progress.max)
        + :is(…,p,…):not([class*=margin]) { margin-block-start: 1rem }
 
-   它会给**任何跟在兄弟元素后面的 <p>** 顶开 16px —— 单靠 `.kv p`
-   这种 (0,1,1) 的规则压不住，副标题会被推得离标题老远。
+   which pushes 16px of margin onto **any <p> that follows a sibling**.
+   A rule like `.kv p` at (0,1,1) cannot override it, so a subtitle drifts
+   far away from its heading.
 
-   解法是用它自己留的逃生口 [class*=margin]：给每个 <p> 加上 no-margin
-   助手。**新增 <p> 时务必带上 no-margin**，然后由下面这些规则显式控距。
+   The fix is the escape hatch Beer leaves itself, [class*=margin]: give
+   every <p> the no-margin helper. **Always add no-margin to a new <p>**,
+   then set spacing explicitly with the rules below.
    ──────────────────────────────────────────────────────────────── */
 
 p.no-margin {
@@ -111,7 +115,7 @@ p.no-margin {
   padding-inline: var(--pad-l) var(--pad-r);
 }
 
-/* ── 品牌与图标 ───────────────────────────────────────────────── */
+/* ── Brand and icons ───────────────────────────────────────────── */
 
 .brand {
   font-family: "Bricolage Grotesque", sans-serif;
@@ -152,7 +156,7 @@ h6>i,
   margin-right: .3rem;
 }
 
-/* 完整性页的键值行：横向 flex 布局 */
+/* Integrity panel key/value rows: a horizontal flex layout */
 .kv {
   display: flex;
   align-items: center;
@@ -202,9 +206,10 @@ h6>i,
   padding: .5rem 0;
 }
 
-/* ── 形状语汇：状态即形状 + 状态即颜色 ───────────────────────── */
+/* ── Shape vocabulary: state is shape, state is colour ─────────── */
 
-/* Beer 默认 .shape 是 3.5rem 且统一 primary 色；这里按语义覆盖 */
+/* Beer's .shape defaults to 3.5rem and a single primary colour; override
+   both by semantics */
 .shape {
   flex: none;
   inline-size: 22px;
@@ -302,7 +307,7 @@ h6>i,
   }
 }
 
-/* ── 视图切换 ─────────────────────────────────────────────────── */
+/* ── View switching ────────────────────────────────────────────── */
 
 .view {
   display: none;
@@ -318,7 +323,7 @@ h6>i,
   flex: none;
 }
 
-/* ── 消息 ─────────────────────────────────────────────────────── */
+/* ── Messages ──────────────────────────────────────────────────── */
 
 .msg {
   display: flex;
@@ -377,7 +382,8 @@ h6>i,
   animation: settle .22s var(--spring-soft) both;
 }
 
-/* 撤回：不消失，留痕。对比度必须够——不能靠降低不透明度表达"失效" */
+/* Retraction: never disappears, always leaves a trace. Contrast must stay
+   adequate -- fading it out is not how you express "no longer valid" */
 .msg[data-state="retracted"] .text {
   text-decoration: line-through;
   text-decoration-thickness: 2px;
@@ -401,14 +407,15 @@ h6>i,
   opacity: .6;
 }
 
-/* 锁住的消息：密文仍在、位置仍在，只是读不了 —— 视觉上要说清这一点，
-   不能做得像"这条消息不存在"。 */
+/* A locked message: the ciphertext is still there, its position is still
+   there, it simply cannot be read. The visuals have to say that, not look
+   like the message never existed. */
 .msg.locked .text {
   color: var(--on-surface-variant, #b9b9bd);
   font-style: italic;
 }
 
-/* ── 告警：时间线里的封条，不是 toast ─────────────────────────── */
+/* ── Alarms: a notice sealed into the timeline, not a toast ────── */
 
 .alarm {
   display: flex;
@@ -431,7 +438,7 @@ h6>i,
   margin-top: .5rem;
 }
 
-/* ── 空态 ─────────────────────────────────────────────────────── */
+/* ── Empty state ───────────────────────────────────────────────── */
 
 .empty {
   display: flex;

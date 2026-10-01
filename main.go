@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Command immulog 是一个把 Git 当作信任根的聊天服务。
+// Command immulog is a chat service that treats Git as its root of trust.
 //
-// 这个文件只负责组装与生命周期 —— 所有真实逻辑都在 internal/ 里。
-// 目录即架构约束：gitx 是唯一碰 os/exec 的包，web 是唯一碰 net/http 的包。
+// This file only assembles and manages the lifecycle -- all real logic lives in
+// the packages below. The layout is itself an architectural constraint:
+// core/gitx is the only package that touches os/exec, and internal/web is the
+// only one that touches net/http.
 package main
 
 import (
@@ -27,17 +29,19 @@ import (
 	"immulog/internal/web"
 )
 
-// 前端由二进制内嵌 —— 部署即一个文件，用户自建节点不需要 Node.js。
+// The frontend is embedded in the binary -- deployment is one file, and nobody
+// running a node needs Node.js.
 //
-// ⚠️ 发布前必须把 Beer CSS 一并 vendor 进 web/（见 docs/DESIGN.md §8.8）：
-// 一个防篡改产品在运行时从第三方 CDN 拉样式表，是供应链漏洞。
+// ⚠️ Before any release, vendor Beer CSS into web/ (see docs/DESIGN.md §8.8):
+// a tamper-evidence product pulling a stylesheet from a third-party CDN at
+// runtime is a supply-chain hole.
 //
 //go:embed web
 var embedded embed.FS
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("启动失败", "err", err)
+		slog.Error("startup failed", "err", err)
 		os.Exit(1)
 	}
 }
@@ -49,34 +53,37 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 1) 仓库：bare、无 worktree、无 index —— 消息提交不落任何文件
+	// 1) Repository: bare, no worktree, no index -- committing a message writes
+	//    no files at all
 	dir := env("IMMULOG_REPO", "./repoDB")
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 		if err := gitx.Init(ctx, dir); err != nil {
 			return err
 		}
-		log.Info("已初始化仓库", "dir", dir)
+		log.Info("initialised repository", "dir", dir)
 	}
 	repo := gitx.Open(dir)
 
-	// 2) 身份只来自 git 配置，永不来自请求体
+	// 2) Identity comes only from git config, never from a request body
 	name, email, err := repo.Identity(ctx)
 	if err != nil {
 		return err
 	}
 	key, _ := repo.SigningKey(ctx)
 
-	// feed 标识只由「是谁」决定，**不含密钥** —— 否则换密钥就等于换一条 feed，
-	// 密钥轮换公告也就无从衔接（见 DESIGN.md §4.3）。
+	// The feed identifier is derived only from "who you are", **not from the
+	// key** -- otherwise rotating a key would mean a different feed, and the
+	// rotation notice could not chain (see DESIGN.md §4.3).
 	pub := feed.FeedID(name + "\x00" + email)
 
-	// 配了密钥就必须真的能签：签名不可用时拒绝启动，绝不静默降级成明文
+	// A configured key must actually work: refuse to start when signing is
+	// broken, rather than silently degrading to plaintext
 	fingerprint := ""
 	if key != "" {
 		fingerprint, err = feed.ProbeSigning(ctx, repo)
 		if err != nil {
-			return fmt.Errorf("user.signingkey 已配置但无法签名：%w\n"+
-				"  修好它，或清空该配置以明确地以「不签名」身份运行", err)
+			return fmt.Errorf("user.signingkey is configured but cannot sign: %w\n"+
+				"  fix it, or clear that config to run explicitly unsigned", err)
 		}
 	}
 
@@ -85,33 +92,34 @@ func run() error {
 		return err
 	}
 
-	// 5) 端到端加密（可选，但一旦开启就粘住）
+	// 3) End-to-end encryption (optional, but sticky once enabled)
 	//
-	// 触发条件二选一：显式要求，或本机已经有加密身份。
-	// 后者保证「开过一次就一直是开的」—— 否则忘了带环境变量，
-	// 后续消息会悄悄退回明文，而这话说出去就收不回来了。
-	encoded := os.Getenv("IMMULOG_ENCRYPT") == "1" || feed.HasIdentity(dir)
-	if encoded {
+	// Two triggers: an explicit request, or an encryption identity that already
+	// exists here. The latter makes "once on, always on" true -- otherwise a
+	// forgotten environment variable would quietly fall back to plaintext, and
+	// words already spoken cannot be taken back.
+	encrypted := os.Getenv("IMMULOG_ENCRYPT") == "1" || feed.HasIdentity(dir)
+	if encrypted {
 		if err := store.SetupEncryption(ctx); err != nil {
-			return fmt.Errorf("启用加密失败：%w", err)
+			return fmt.Errorf("enabling encryption failed: %w", err)
 		}
-		log.Info("端到端加密已启用", "keys", filepath.Join(dir, "immulog-keys"))
+		log.Info("end-to-end encryption enabled", "keys", filepath.Join(dir, "immulog-keys"))
 	}
 
-	// 6) 前端：内嵌同源 —— 零 CORS，零构建链
+	// 4) Frontend: embedded and same-origin -- zero CORS, zero build chain
 	files, err := fs.Sub(embedded, "web")
 	if err != nil {
 		return err
 	}
 
-	// 7) 多源与外部锚定（都可选）
+	// 5) Multi-source sync and external anchoring (both optional)
 	remotes := parseRemotes(os.Getenv("IMMULOG_REMOTES"))
 	var publisher feed.Publisher
 	if u := os.Getenv("IMMULOG_ANCHOR_URL"); u != "" {
 		publisher = feed.HTTPPublisher{URL: u}
 	}
 
-	// 5) 组装
+	// 6) Assemble
 	hub := web.NewHub()
 	srv := web.New(web.Config{
 		Store:     store,
@@ -125,7 +133,7 @@ func run() error {
 		duration("IMMULOG_SYNC_INTERVAL", web.SyncInterval),
 		duration("IMMULOG_ANCHOR_INTERVAL", web.AnchorInterval))
 
-	// 不设 WriteTimeout：SSE 是长连接，会被它掐断
+	// No WriteTimeout: SSE is a long-lived connection and it would cut it off
 	s := &http.Server{
 		Addr:              ":" + env("PORT", "8081"),
 		Handler:           srv.Handler(),
@@ -139,19 +147,19 @@ func run() error {
 		_ = s.Shutdown(shut)
 	}()
 
-	log.Info("ImmuLog 就绪",
+	log.Info("ImmuLog ready",
 		"addr", s.Addr, "repo", dir, "feed", pub,
 		"signed", store.Signed(), "remotes", len(remotes), "anchor", publisher != nil)
 	if store.Signed() {
-		log.Info("消息将使用密钥签名", "fingerprint", feed.ShortKey(fingerprint))
+		log.Info("messages will be signed", "fingerprint", feed.ShortKey(fingerprint))
 	} else {
-		log.Warn("未配置 user.signingkey：消息不会被签名，身份可被冒名（见 DESIGN.md §4）")
+		log.Warn("no user.signingkey: messages are unsigned, identity can be impersonated (see DESIGN.md §4)")
 	}
 	if len(remotes) == 0 {
-		log.Warn("未配置 IMMULOG_REMOTES：单节点模式，不会与任何对端同步")
+		log.Warn("no IMMULOG_REMOTES: single-node mode, no peer sync")
 	}
 	if publisher == nil {
-		log.Warn("未配置 IMMULOG_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定")
+		log.Warn("no IMMULOG_ANCHOR_URL: anchors stay local, not truly external")
 	}
 
 	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -160,10 +168,10 @@ func run() error {
 	return nil
 }
 
-// parseRemotes 解析 IMMULOG_REMOTES。
+// parseRemotes parses IMMULOG_REMOTES.
 //
-// 支持两种写法：`url`（自动命名）与 `name=url`。
-// 名字只用于隔离区槽位，会经 FeedID 归一成 ref 安全的形式。
+// Two forms are accepted: `url` (auto-named) and `name=url`. The name is only
+// used as a quarantine slot and is normalised into ref-safe form via FeedID.
 func parseRemotes(spec string) []feed.Remote {
 	var out []feed.Remote
 	seen := map[string]bool{}

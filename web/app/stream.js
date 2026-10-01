@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-// stream.js —— 唯一碰 EventSource 的地方。
-// 契约：connect({ since, onEvent }) -> 同步回放 / 实时推送同一套回调。
-// 事件 id 就是 commit 的 OID，所以断线续传是白送的（Last-Event-ID）。
+// stream.js -- the only place that touches EventSource.
+// Contract: connect({ since, onEvent }) drives first-screen replay and live
+// pushes through the same callback.
+// The event id is the commit OID, so resume-after-disconnect is free
+// (Last-Event-ID).
 
 import { mock } from './mock.js';
 
-const TYPES = ['hello', 'msg', 'retract', 'alarm', 'snapshot'];
+const TYPES = ['hello', 'msg', 'retract', 'alarm', 'encryption', 'snapshot'];
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 export function connect({ since, onEvent, onLink } = {}) {
@@ -15,14 +17,14 @@ export function connect({ since, onEvent, onLink } = {}) {
   const es = new EventSource(url);
 
   es.onopen = () => onLink?.('up');
-  es.onerror = () => onLink?.('down'); // 浏览器会自动重连并带上 Last-Event-ID
+  es.onerror = () => onLink?.('down'); // the browser reconnects on its own, with Last-Event-ID
 
   for (const type of TYPES) {
     es.addEventListener(type, (e) => {
       try {
         onEvent({ type, oid: e.lastEventId, ...JSON.parse(e.data) });
       } catch {
-        /* 忽略坏帧，不打断流 */
+        /* ignore a malformed frame; never break the stream over it */
       }
     });
   }

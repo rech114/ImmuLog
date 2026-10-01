@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package gitx 是 ImmuLog 与 git 二进制的唯一边界。
+// Package gitx is the only boundary between ImmuLog and the git binary.
 //
-// 全项目只有这个包允许出现 os/exec。其他任何地方出现 exec.Command 都算设计缺陷。
-// 好处：换语言 / 换 libgit2 / 加缓存层，全部只动这个包。
+// This is the only package in the project allowed to import os/exec. Anywhere
+// else, an exec.Command call is a design defect.
+// The payoff: swapping languages, swapping in libgit2, or adding a cache layer
+// touches exactly one package.
 //
-// 四条纪律（对应 docs/DESIGN.md §10）：
-//  1. 参数一律 []string，正文一律走 stdin —— 永不拼接 shell 字符串
-//  2. 每次调用带 context 超时 —— 卡住的子进程不能拖垮 handler
-//  3. 永不用 `git commit`（要 index、要锁），只用 `commit-tree`
-//  4. 永不在循环里调 git —— 一次 `git log` 取一页
+// Four rules (see docs/DESIGN.md §10):
+//  1. Arguments are always []string, message bodies always go through stdin --
+//     never build a shell string
+//  2. Every call carries a context timeout -- a stuck child process must not
+//     take down a handler
+//  3. Never `git commit` (needs an index, needs a lock); only `commit-tree`
+//  4. Never call git inside a loop -- one `git log` fetches one page
 package gitx
 
 import (
@@ -24,11 +28,12 @@ import (
 	"time"
 )
 
-// ErrCASFailed 表示 update-ref 的 <old> 与实际不符 —— 有人抢先或本地被改写。
-// 这是篡改检测的信号源，必须原样上报，绝不能吞。
+// ErrCASFailed means update-ref's <old> value did not match -- someone got
+// there first, or the ref was rewritten. This is the signal source for tamper
+// detection and must be surfaced verbatim, never swallowed.
 var ErrCASFailed = errors.New("cas failed")
 
-// Error 是 git 子进程的非零退出。
+// Error is a non-zero exit from a git child process.
 type Error struct {
 	Args   []string
 	Code   int
@@ -43,7 +48,7 @@ func (e *Error) Error() string {
 	return "git " + strings.Join(e.Args, " ") + ": " + s
 }
 
-// Repo 是一个 git 仓库句柄。零值不可用，请走 Open。
+// Repo is a handle on a git repository. The zero value is not usable; use Open.
 type Repo struct {
 	Dir     string
 	Timeout time.Duration
@@ -51,11 +56,11 @@ type Repo struct {
 
 const defaultTimeout = 10 * time.Second
 
-// Open 绑定一个已有的仓库目录（bare 或非 bare 均可）。
+// Open binds an existing repository directory (bare or not).
 func Open(dir string) *Repo { return &Repo{Dir: dir, Timeout: defaultTimeout} }
 
-// Init 在 dir 建立一个 bare 仓库。bare 是有意的：
-// 无 worktree、无 index，消息提交走 commit-tree 不落任何文件。
+// Init creates a bare repository in dir. Bare is deliberate: no worktree, no
+// index, and messages are committed via commit-tree so nothing lands on disk.
 func Init(ctx context.Context, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -65,7 +70,8 @@ func Init(ctx context.Context, dir string) error {
 	return err
 }
 
-// run 是全部 git 调用的唯一入口。stdin 为 nil 时不接管道。
+// run is the single entry point for every git invocation. stdin is not piped
+// when nil.
 func (r *Repo) run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	timeout := r.Timeout
 	if timeout <= 0 {
@@ -97,7 +103,8 @@ func (r *Repo) run(ctx context.Context, stdin []byte, args ...string) ([]byte, e
 	return out.Bytes(), nil
 }
 
-// runLines 在 run 之上按行切分，去掉尾部空行。用于 hash / ref 这类单值输出。
+// runLines splits run's output into lines, dropping the trailing newline.
+// For single-value output such as hash and ref lookups.
 func (r *Repo) runLines(ctx context.Context, stdin []byte, args ...string) ([]string, error) {
 	out, err := r.run(ctx, stdin, args...)
 	if err != nil {
@@ -110,20 +117,21 @@ func (r *Repo) runLines(ctx context.Context, stdin []byte, args ...string) ([]st
 	return strings.Split(text, "\n"), nil
 }
 
-// isCASRejection 把 git 的措辞归一到 ErrCASFailed。
+// isCASRejection normalises git's wording into ErrCASFailed.
 func isCASRejection(stderr string) bool {
 	return strings.Contains(stderr, "cannot lock ref") ||
 		strings.Contains(stderr, "reference already exists") ||
 		strings.Contains(stderr, "but expected")
 }
 
-// Config 读取一项 git 配置；不存在时返回空串而不是错误。
+// Config reads one git config value; a missing key yields an empty string
+// rather than an error.
 func (r *Repo) Config(ctx context.Context, key string) (string, error) {
 	lines, err := r.runLines(ctx, nil, "config", "--get", key)
 	if err != nil {
 		var ge *Error
 		if errors.As(err, &ge) && ge.Code == 1 {
-			return "", nil // key 不存在
+			return "", nil // key does not exist
 		}
 		return "", err
 	}
@@ -133,7 +141,8 @@ func (r *Repo) Config(ctx context.Context, key string) (string, error) {
 	return strings.TrimSpace(lines[0]), nil
 }
 
-// Identity 返回仓库的身份。ImmuLog 的作者身份只来自这里，永远不来自请求体。
+// Identity returns the repository's identity. ImmuLog's author identity comes
+// only from here, never from a request body.
 func (r *Repo) Identity(ctx context.Context) (name, email string, err error) {
 	name, err = r.Config(ctx, "user.name")
 	if err != nil {
@@ -144,12 +153,13 @@ func (r *Repo) Identity(ctx context.Context) (name, email string, err error) {
 		return "", "", err
 	}
 	if name == "" || email == "" {
-		return "", "", errors.New("git 身份未配置：请设置 user.name 与 user.email")
+		return "", "", errors.New("git identity is not configured: set user.name and user.email")
 	}
 	return name, email, nil
 }
 
-// SigningKey 返回配置的签名密钥；为空表示不做 commit 签名。
+// SigningKey returns the configured signing key; empty means commits are not
+// signed.
 func (r *Repo) SigningKey(ctx context.Context) (string, error) {
 	return r.Config(ctx, "user.signingkey")
 }

@@ -10,39 +10,42 @@ import (
 	"time"
 )
 
-// logFormat 一次进程调用读回一页历史。
+// logFormat reads back one page of history in a single process call.
 //
-// 用 `git log -z`（记录之间是 NUL）+ 字段之间 \x1f，并且把 %B 放在**最后**：
-// 于是正文里出现 \x1e / 任意控制字符都不会把记录切错。
+// `git log -z` separates records with NUL and \x1f separates fields, with %B
+// placed **last**: that way a body containing \x1e or any control character
+// cannot split a record in the wrong place.
 //
-// %G? 是 git 自己的签名状态：N=未签名 G=有效 U=密钥未知 B=签名损坏。
-// %GK 是签名者的密钥指纹 —— 密钥链条就是靠它逐条串起来的。
+// %G? is git's own signature status: N=unsigned G=good U=unknown key B=bad.
+// %GK is the signer's key fingerprint -- the key chain is stitched together
+// commit by commit from this value.
 const logFormat = "%H%x1f%an%x1f%at%x1f%G?%x1f%GK%x1f" +
 	"%(trailers:key=ImmuLog-Seq,valueonly)%x1f" +
 	"%(trailers:key=ImmuLog-Retracts,valueonly)%x1f" +
 	"%(trailers:key=ImmuLog-Reason,valueonly)%x1f" +
 	"%B"
 
-// RawCommit 是 log 解析出的一条原始提交。
-// Trailer 由 git 自己解析（不重造轮子）；Kind / Declared 从正文尾部的
-// trailer 段落里取，与 git 的 trailer 语法同一套规则。
+// RawCommit is one commit as parsed from log output.
+// Trailers are parsed by git itself (no wheel reinvented here); Kind / Declared
+// / Epoch / Enc are pulled from the trailing trailer paragraph using git's own
+// trailer rules.
 type RawCommit struct {
 	OID      string
 	Author   string
 	At       time.Time
 	Sig      string // "" | "good" | "untrusted" | "bad"
-	Key      string // 签名密钥指纹；未签名时为空
+	Key      string // signing key fingerprint; empty when unsigned
 	Seq      string
 	Retracts string
 	Reason   string
 	Kind     string // `ImmuLog-Kind` trailer
-	Declared string // `ImmuLog-Key` trailer（只有轮换公告才有）
+	Declared string // `ImmuLog-Key` trailer (only present on rotation notices)
 	Epoch    string // `ImmuLog-Epoch` trailer
-	Enc      string // `ImmuLog-Enc` trailer —— 作者的加密公钥
+	Enc      string // `ImmuLog-Enc` trailer -- the author's encryption public key
 	Body     string
 }
 
-// sigStatus 把 git 的 %G? 单字符翻译成人能读的状态。
+// sigStatus turns git's %G? character into something readable.
 func sigStatus(c string) string {
 	switch c {
 	case "G":
@@ -56,8 +59,8 @@ func sigStatus(c string) string {
 	}
 }
 
-// EmptyTree 返回空 tree 的对象名并写入对象库。
-// 消息不产生任何文件，所有 commit 都复用这棵空树。
+// EmptyTree writes and returns the empty tree's object name.
+// Messages produce no files; every commit reuses this one tree.
 func (r *Repo) EmptyTree(ctx context.Context) (string, error) {
 	out, err := r.run(context.WithoutCancel(ctx), []byte{}, "hash-object", "-w", "-t", "tree", "--stdin")
 	if err != nil {
@@ -66,11 +69,12 @@ func (r *Repo) EmptyTree(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Commit 造一个 commit 对象。parent 为空表示链的起点。
+// Commit creates a commit object. An empty parent means the start of the chain.
 //
-// 这里刻意不用 `git commit`：commit-tree 不需要 index、不需要 worktree、
-// 不产生 .lock，因此在 bare 仓库里可用，且并发写不同 ref 天然安全。
-// 正文从 stdin 进入，天然免除参数注入。
+// `git commit` is deliberately avoided: commit-tree needs no index, no
+// worktree, and produces no .lock file, so it works in a bare repository and
+// concurrent writes to different refs are inherently safe. The message arrives
+// on stdin, which removes argument injection by construction.
 func (r *Repo) Commit(ctx context.Context, tree, parent, message string, sign bool) (string, error) {
 	args := []string{"commit-tree", tree}
 	if parent != "" {
@@ -82,10 +86,11 @@ func (r *Repo) Commit(ctx context.Context, tree, parent, message string, sign bo
 	return r.commitTree(ctx, args, message)
 }
 
-// CommitAs 用**指定密钥**签名一个 commit。
+// CommitAs signs a commit with a **specific key**.
 //
-// 密钥轮换公告必须由旧密钥签名，而用户此时已经把 user.signingkey 指向新密钥，
-// 所以只能显式指定。`-S<keyid>` 是 git 自带的写法。
+// A key-rotation notice must be signed by the old key, but by then the user has
+// already pointed user.signingkey at the new one, so the key has to be named
+// explicitly. `-S<keyid>` is git's own syntax for that.
 func (r *Repo) CommitAs(ctx context.Context, tree, parent, message, key string) (string, error) {
 	args := []string{"commit-tree", tree}
 	if parent != "" {
@@ -105,7 +110,7 @@ func (r *Repo) commitTree(ctx context.Context, args []string, message string) (s
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Exists 判断对象是否存在于本地对象库。
+// Exists reports whether an object is present in the local object store.
 func (r *Repo) Exists(ctx context.Context, oid string) (bool, error) {
 	if oid == "" {
 		return false, nil
@@ -121,7 +126,7 @@ func (r *Repo) Exists(ctx context.Context, oid string) (bool, error) {
 	return false, err
 }
 
-// Log 一次调用读回一页历史，按提交时间倒序。
+// Log reads back one page of history, newest first.
 func (r *Repo) Log(ctx context.Context, ref string, limit int) ([]RawCommit, error) {
 	if ref == "" {
 		return nil, nil
@@ -135,7 +140,7 @@ func (r *Repo) Log(ctx context.Context, ref string, limit int) ([]RawCommit, err
 	out, err := r.run(ctx, nil, args...)
 	if err != nil {
 		var ge *Error
-		// 空仓库 / 未知 ref：语义上等于没有历史，不是错误
+		// Empty repository / unknown ref: semantically "no history", not an error
 		if errors.As(err, &ge) && (ge.Code == 128 || ge.Code == 1) {
 			return nil, nil
 		}
@@ -151,7 +156,8 @@ func parseLog(raw string) []RawCommit {
 		if rec == "" {
 			continue
 		}
-		// 只切前 8 个分隔符，正文（第 9 项）原样保留，哪怕它含 \x1f
+		// Split only the first 8 separators; the body (field 9) is kept verbatim
+		// even if it contains \x1f
 		f := strings.SplitN(rec, "\x1f", 9)
 		if len(f) != 9 {
 			continue
@@ -180,8 +186,8 @@ func parseLog(raw string) []RawCommit {
 	return commits
 }
 
-// trailerIn 在正文的最后一个段落里找 key 的值。找不到返回空串。
-// 用的是 git 自己的 trailer 规则：trailer 必须落在最后一段。
+// trailerIn looks up key in the body's final paragraph. Empty when absent.
+// It applies git's own trailer rule: trailers must live in the last paragraph.
 func trailerIn(body, key string) string {
 	s := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
 	i := strings.LastIndex(s, "\n\n")
@@ -197,8 +203,8 @@ func trailerIn(body, key string) string {
 	return ""
 }
 
-// LogRange 只读 since 之后（不含）到 ref 之间的提交，从旧到新。
-// 同步时用它算出"这次到底新到了哪几条"，一次进程调用。
+// LogRange reads only the commits after `since` (exclusive) up to ref, oldest
+// first. Sync uses it to compute "which commits are actually new", in one call.
 func (r *Repo) LogRange(ctx context.Context, ref, since string, limit int) ([]RawCommit, error) {
 	if ref == "" {
 		return nil, nil
@@ -224,8 +230,8 @@ func (r *Repo) LogRange(ctx context.Context, ref, since string, limit int) ([]Ra
 	return parseLog(string(out)), nil
 }
 
-// TrailerValue 读一个提交的若干个 trailer 值（一次进程调用）。
-// 顺序与 keys 一致；不存在时该位为空串。
+// TrailerValue reads several trailer values from one commit (a single call).
+// The order matches keys; a missing key yields an empty string.
 func (r *Repo) TrailerValue(ctx context.Context, oid string, keys ...string) ([]string, error) {
 	if oid == "" || len(keys) == 0 {
 		return nil, nil
@@ -248,8 +254,9 @@ func (r *Repo) TrailerValue(ctx context.Context, oid string, keys ...string) ([]
 	return vals, nil
 }
 
-// HashBlob 计算数据的 blob 对象名。<type> <len>\0<content> 的 SHA-1 —— git 自己的定义。
-// write=false 时只算不存，适合周期性算摘要。
+// HashBlob computes a blob's object name: SHA-1 over `<type> <len>\0<content>`,
+// git's own definition. With write=false it computes without storing, which is
+// what periodic digesting wants.
 func (r *Repo) HashBlob(ctx context.Context, data []byte, write bool) (string, error) {
 	args := []string{"hash-object", "--stdin"}
 	if write {

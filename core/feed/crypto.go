@@ -2,16 +2,18 @@
 
 package feed
 
-// crypto.go —— epoch 密钥与「逐收件人封装」。
+// crypto.go -- epoch keys and per-recipient wrapping.
 //
-// 全部用标准库：crypto/ecdh(X25519) + crypto/hkdf(RFC 5869) +
-// crypto/aes(GCM) + crypto/rand。没有自研原语，也没有第三方依赖。
+// Everything comes from the standard library: crypto/ecdh (X25519),
+// crypto/hkdf (RFC 5869), crypto/aes (GCM) and crypto/rand. No primitives are
+// hand-rolled, and there are no third-party dependencies.
 //
-// 为什么要逐收件人封装：
-// 完整性和隐私在这里是**相反**的要求 —— 完整性想要副本越广越强，
-// 隐私要求密钥的传播范围必须比密文窄得多。
-// 把 epoch 密钥用每个成员的公钥各封一份，就同时满足了：
-// 密文随仓库自由复制，而**只有成员解得开**。
+// Why per-recipient wrapping:
+// integrity and privacy make **opposite** demands here -- integrity wants copies
+// to spread as widely as possible, privacy wants key distribution far narrower
+// than the ciphertext. Wrapping the epoch key once per member's public key
+// satisfies both: the ciphertext replicates freely with the repository, and
+// **only members can open it**.
 
 import (
 	"crypto/aes"
@@ -25,35 +27,39 @@ import (
 	"fmt"
 )
 
-// KeySize 是对称密钥长度。
+// KeySize is the symmetric key length.
 const KeySize = 32
 
-// encInfo 把 HKDF 导出的密钥绑定到「封装」这一个用途上。
+// encInfo binds the HKDF-derived key to the "wrapping" use case.
 var encInfo = []byte("immulog/epoch-wrap/v1")
 
-// bodyInfo 把正文加密的密钥和封装用的密钥分开。
+// bodyInfo keeps body-encryption keys separate from wrapping keys.
 var bodyInfo = []byte("immulog/body/v1")
 
 var (
-	// ErrNoKey 表示本地没有这个 epoch 的密钥。
-	ErrNoKey = errors.New("本地没有该 epoch 的密钥")
-	// ErrNotRecipient 表示这份封装不是给我们的 —— 直白说就是"你不是成员"。
-	ErrNotRecipient = errors.New("这份密钥不是封装给你的")
-	// ErrBadCiphertext 表示密文被改动或格式不对（AEAD 认证失败会落到这里）。
-	ErrBadCiphertext = errors.New("密文校验失败")
+	// ErrNoKey means this machine does not have that epoch's key.
+	ErrNoKey = errors.New("no key for that epoch on this machine")
+	// ErrNotRecipient means the wrapped copy is not ours -- plainly, "you are
+	// not a member".
+	ErrNotRecipient = errors.New("this key was not wrapped for you")
+	// ErrBadCiphertext means the ciphertext was altered or is malformed (AEAD
+	// authentication failure lands here).
+	ErrBadCiphertext = errors.New("ciphertext failed authentication")
 )
 
-// ── 加密身份 ──────────────────────────────────────────────────────
+// ── Encryption identity ─────────────────────────────────────────────
 
-// EncIdentity 是一对 X25519 密钥，用于**收**封装给自己的 epoch 密钥。
+// EncIdentity is an X25519 key pair, used to **receive** epoch keys wrapped for
+// us.
 //
-// 它与签名密钥无关：签名用的是 git 的 ssh 签名，加密用的是这里的 X25519。
-// 分开是有意的 —— 签名密钥通常由 ssh-agent 托管，拿不到私钥原始字节。
+// It is unrelated to the signing key: signing uses git's ssh signing, while
+// encryption uses this X25519 pair. Keeping them apart is deliberate -- signing
+// keys usually live in ssh-agent, where the raw private bytes are unavailable.
 type EncIdentity struct {
 	priv *ecdh.PrivateKey
 }
 
-// GenerateEncIdentity 生成一对新的加密身份。
+// GenerateEncIdentity creates a fresh encryption identity.
 func GenerateEncIdentity() (*EncIdentity, error) {
 	p, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -62,10 +68,11 @@ func GenerateEncIdentity() (*EncIdentity, error) {
 	return &EncIdentity{priv: p}, nil
 }
 
-// ParseEncIdentity 从 32 字节种子还原身份（私钥落盘用）。
+// ParseEncIdentity restores an identity from a 32-byte seed (for persisting the
+// private key).
 func ParseEncIdentity(seed []byte) (*EncIdentity, error) {
 	if len(seed) != KeySize {
-		return nil, fmt.Errorf("加密私钥种子应为 %d 字节，得到 %d", KeySize, len(seed))
+		return nil, fmt.Errorf("encryption seed must be %d bytes, got %d", KeySize, len(seed))
 	}
 	p, err := ecdh.X25519().NewPrivateKey(seed)
 	if err != nil {
@@ -74,39 +81,40 @@ func ParseEncIdentity(seed []byte) (*EncIdentity, error) {
 	return &EncIdentity{priv: p}, nil
 }
 
-// Seed 导出 32 字节私钥种子。
+// Seed exports the 32-byte private key seed.
 func (e *EncIdentity) Seed() []byte { return e.priv.Bytes() }
 
-// Public 返回 base64 编码的公钥，可直接写进 trailer。
+// Public returns the base64 public key, ready to be written into a trailer.
 func (e *EncIdentity) Public() string {
 	return base64.StdEncoding.EncodeToString(e.priv.PublicKey().Bytes())
 }
 
-// ParseEncPublic 解析 base64 公钥。
+// ParseEncPublic parses a base64 public key.
 func ParseEncPublic(s string) (*ecdh.PublicKey, error) {
 	raw, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
-		return nil, fmt.Errorf("公钥不是合法 base64: %w", err)
+		return nil, fmt.Errorf("public key is not valid base64: %w", err)
 	}
 	return ecdh.X25519().NewPublicKey(raw)
 }
 
-// ── 逐收件人封装 ──────────────────────────────────────────────────
+// ── Per-recipient wrapping ──────────────────────────────────────────
 
-// WrapKey 把 epoch 密钥封装给某个收件人公钥。
+// WrapKey wraps an epoch key for one recipient public key.
 //
-// 构造是标准的 ECIES 式：
+// The construction is the standard ECIES shape:
 //
-//	ephemeral ← 随机 X25519 密钥对
-//	shared    ← ECDH(ephemeral, recipient)
-//	wrapKey   ← HKDF-SHA256(shared, info="immulog/epoch-wrap/v1")
-//	输出       ← base64(ephemeralPub ‖ nonce ‖ AES-GCM(wrapKey, key))
+//	ephemeral <- a fresh X25519 key pair
+//	shared    <- ECDH(ephemeral, recipient)
+//	wrapKey   <- HKDF-SHA256(shared, info="immulog/epoch-wrap/v1")
+//	output    <- base64(ephemeralPub ‖ nonce ‖ AES-GCM(wrapKey, key))
 //
-// 每次封装都用新的临时密钥对，所以同一个 epoch 密钥对不同成员的两份封装
-// 互不可比 —— 外部看不出"这两个人是同一个房间的"。
+// Every wrap uses a fresh ephemeral pair, so two wraps of the same epoch key
+// for different members are not comparable -- an outsider cannot tell that the
+// two are in the same room.
 func WrapKey(recipient *ecdh.PublicKey, key []byte) (string, error) {
 	if len(key) != KeySize {
-		return "", fmt.Errorf("密钥应为 %d 字节", KeySize)
+		return "", fmt.Errorf("key must be %d bytes", KeySize)
 	}
 	eph, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -128,11 +136,12 @@ func WrapKey(recipient *ecdh.PublicKey, key []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
-// UnwrapKey 用私钥解出 epoch 密钥。不是给你的封装会返回 ErrNotRecipient。
+// UnwrapKey recovers the epoch key with a private key. A wrap intended for
+// someone else returns ErrNotRecipient.
 func UnwrapKey(priv *ecdh.PrivateKey, wrapped string) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(wrapped)
 	if err != nil {
-		return nil, fmt.Errorf("封装不是合法 base64: %w", err)
+		return nil, fmt.Errorf("wrapped key is not valid base64: %w", err)
 	}
 	if len(raw) <= 32 {
 		return nil, ErrNotRecipient
@@ -143,7 +152,7 @@ func UnwrapKey(priv *ecdh.PrivateKey, wrapped string) ([]byte, error) {
 	}
 	shared, err := priv.ECDH(ephPub)
 	if err != nil {
-		// X25519 对低阶点会拒绝 —— 换个说法，就是"这不是给我的"
+		// X25519 rejects low-order points -- in other words, "this is not for you"
 		return nil, ErrNotRecipient
 	}
 	wk, err := hkdf.Key(sha256.New, shared, nil, string(encInfo), KeySize)
@@ -153,12 +162,13 @@ func UnwrapKey(priv *ecdh.PrivateKey, wrapped string) ([]byte, error) {
 	return open(wk, raw[32:])
 }
 
-// ── 正文加解密 ────────────────────────────────────────────────────
+// ── Body sealing ────────────────────────────────────────────────────
 
-// SealBody 用 epoch 密钥加密正文，返回 base64(nonce‖ciphertext)。
+// SealBody encrypts a body with an epoch key and returns base64(nonce‖ciphertext).
 //
-// 正文密钥由 epoch 密钥经 HKDF 派生，与封装用的密钥**不同** ——
-// 这样即使某处误用了封装输出，也解不开正文。
+// The body key is HKDF-derived from the epoch key and is **different** from the
+// wrapping key -- so even if a wrapping output were misused somewhere, it still
+// would not open a body.
 func SealBody(key []byte, plaintext string) (string, error) {
 	bk, err := hkdf.Key(sha256.New, key, nil, string(bodyInfo), KeySize)
 	if err != nil {
@@ -171,11 +181,11 @@ func SealBody(key []byte, plaintext string) (string, error) {
 	return base64.StdEncoding.EncodeToString(sealed), nil
 }
 
-// OpenBody 解密正文。密文被改动过会返回 ErrBadCiphertext。
+// OpenBody decrypts a body. A tampered ciphertext returns ErrBadCiphertext.
 func OpenBody(key []byte, b64 string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return "", fmt.Errorf("密文不是合法 base64: %w", err)
+		return "", fmt.Errorf("ciphertext is not valid base64: %w", err)
 	}
 	bk, err := hkdf.Key(sha256.New, key, nil, string(bodyInfo), KeySize)
 	if err != nil {
@@ -188,7 +198,7 @@ func OpenBody(key []byte, b64 string) (string, error) {
 	return string(plain), nil
 }
 
-// ── AEAD ──────────────────────────────────────────────────────────
+// ── AEAD ────────────────────────────────────────────────────────────
 
 func seal(key, plaintext []byte) ([]byte, error) {
 	gcm, err := newGCM(key)

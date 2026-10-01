@@ -2,16 +2,20 @@
 
 package feed
 
-// keyring.go —— 本机的密钥保管。
+// keyring.go -- this machine's key custody.
 //
-// 这里是 crypto-shredding 唯一真正落地的地方：**明文 epoch 密钥只存在本机**，
-// 不进 git 对象库、不进任何 ref、不参与同步。
-// 「丢弃密钥」= 把本机这份覆写后删掉。
+// This is the only place crypto-shredding actually lands: **plaintext epoch
+// keys exist only on this machine**. They never enter the git object store,
+// never enter a ref, and never take part in sync.
+// "Discard the key" means overwriting and deleting this machine's copy.
 //
-// 诚实的天花板（docs/DESIGN.md §6.4）：
-//   · 别人手里可能还留着副本 —— 丢弃只在**所有持有者都照做**时才是彻底的
-//   · 闪存/文件系统的覆写不保证物理擦除
-// 所以这件事的强度上限是「保管纪律」，不是「密码学」。
+// Honest ceiling (docs/DESIGN.md §6.4):
+//   - others may still hold copies -- discarding is only complete when **every
+//     holder does the same**
+//   - overwriting on flash storage / journaling filesystems is not a physical
+//     erase guarantee
+//
+// So the strength of this is custody discipline, not cryptography.
 
 import (
 	"errors"
@@ -20,25 +24,27 @@ import (
 	"path/filepath"
 )
 
-// keysDir 是密钥目录名，位于仓库目录内但不在 git 管辖的命名空间里。
+// keysDir is the key directory name: inside the repo directory, but outside any
+// namespace git manages.
 const keysDir = "immulog-keys"
 
-// identityFile 保存本机的 X25519 私钥种子。
+// identityFile holds this machine's X25519 private key seed.
 const identityFile = "identity"
 
-// 文件权限：只有本用户可读写。
+// File permissions: readable and writable by this user only.
 const keyPerm = 0o600
 
-// ErrKeysMissing 表示本机没有任何密钥材料。
-var ErrKeysMissing = errors.New("本机没有加密身份")
+// ErrKeysMissing means this machine holds no key material.
+var ErrKeysMissing = errors.New("no encryption identity on this machine")
 
-// ErrShredded 表示这个世代的密钥已被本机**主动丢弃**。
+// ErrShredded means this epoch's key was **deliberately discarded** here.
 //
-// 它和 ErrNoKey 是两回事：ErrNoKey 是"没拿到"，ErrShredded 是"拿到了又扔了"。
-// 这个区分是整个 crypto-shredding 的支点 —— 见 ShredEpochKey 的注释。
-var ErrShredded = errors.New("该世代的密钥已被主动丢弃")
+// It is not the same as ErrNoKey: ErrNoKey is "never had it", ErrShredded is
+// "had it and threw it away". That distinction is the fulcrum of the whole
+// crypto-shredding design -- see ShredEpochKey.
+var ErrShredded = errors.New("this epoch's key was deliberately discarded")
 
-// keyPath 返回仓库内的密钥目录。不存在时按需创建。
+// keyPath returns the key directory inside the repo, creating it on demand.
 func keyPath(repoDir string) (string, error) {
 	dir := filepath.Join(repoDir, keysDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -51,16 +57,17 @@ func epochFile(dir string, n int) string {
 	return filepath.Join(dir, fmt.Sprintf("epoch-%d", n))
 }
 
-// shredMarker 是"这个世代被我丢掉了"的持久标记。
+// shredMarker is the persistent record of "this epoch was discarded here".
 //
-// 为什么需要它：链上存着封装给我们的那份密钥，所以只要还留着身份，
-// **删掉本地文件之后随时能从链上重新解开** —— 那删除就只是个假动作。
-// 丢弃必须是一个**决定**，而不是一次文件删除。
+// Why it is needed: the chain holds a copy of the key wrapped for us, so as
+// long as our identity survives, **deleting the local file means the key can be
+// unwrapped from the chain again at any time** -- which would make the deletion
+// a no-op. Discarding must be a **decision**, not a file deletion.
 func shredMarker(dir string, n int) string {
 	return filepath.Join(dir, fmt.Sprintf("shredded-%d", n))
 }
 
-// IsShredded 判断本机是否已主动丢弃某个世代。
+// IsShredded reports whether this machine has deliberately discarded an epoch.
 func IsShredded(repoDir string, n int) bool {
 	dir, err := keyPath(repoDir)
 	if err != nil {
@@ -70,7 +77,7 @@ func IsShredded(repoDir string, n int) bool {
 	return err == nil
 }
 
-// LoadIdentity 读取本机加密身份；不存在返回 ErrKeysMissing。
+// LoadIdentity reads this machine's encryption identity; ErrKeysMissing if absent.
 func LoadIdentity(repoDir string) (*EncIdentity, error) {
 	dir, err := keyPath(repoDir)
 	if err != nil {
@@ -86,7 +93,7 @@ func LoadIdentity(repoDir string) (*EncIdentity, error) {
 	return ParseEncIdentity(seed)
 }
 
-// SaveIdentity 落盘本机加密身份（已存在则覆盖）。
+// SaveIdentity persists this machine's encryption identity (overwriting).
 func SaveIdentity(repoDir string, id *EncIdentity) error {
 	dir, err := keyPath(repoDir)
 	if err != nil {
@@ -95,8 +102,8 @@ func SaveIdentity(repoDir string, id *EncIdentity) error {
 	return writeSecret(filepath.Join(dir, identityFile), id.Seed())
 }
 
-// LoadEpochKey 读取某个 epoch 的明文密钥。
-// 已被丢弃时返回 ErrShredded；从未持有过返回 ErrNoKey。
+// LoadEpochKey reads an epoch's plaintext key.
+// ErrShredded if it was discarded; ErrNoKey if it was never held.
 func LoadEpochKey(repoDir string, n int) ([]byte, error) {
 	if IsShredded(repoDir, n) {
 		return nil, ErrShredded
@@ -113,18 +120,19 @@ func LoadEpochKey(repoDir string, n int) ([]byte, error) {
 		return nil, err
 	}
 	if len(key) != KeySize {
-		return nil, fmt.Errorf("epoch %d 的密钥长度不对（%d 字节）", n, len(key))
+		return nil, fmt.Errorf("epoch %d key has wrong length (%d bytes)", n, len(key))
 	}
 	return key, nil
 }
 
-// SaveEpochKey 落盘某个 epoch 的明文密钥。
+// SaveEpochKey persists an epoch's plaintext key.
 func SaveEpochKey(repoDir string, n int, key []byte) error {
 	if len(key) != KeySize {
-		return fmt.Errorf("密钥应为 %d 字节", KeySize)
+		return fmt.Errorf("key must be %d bytes", KeySize)
 	}
 	if IsShredded(repoDir, n) {
-		// 已经决定丢弃的世代，不许再存回来 —— 否则丢弃会被悄悄撤销
+		// A discarded epoch may not be written back -- otherwise the discard
+		// would be quietly undone
 		return ErrShredded
 	}
 	dir, err := keyPath(repoDir)
@@ -134,14 +142,17 @@ func SaveEpochKey(repoDir string, n int, key []byte) error {
 	return writeSecret(epochFile(dir, n), key)
 }
 
-// ShredEpochKey 覆写并删除某个 epoch 的明文密钥，并留下持久标记。
+// ShredEpochKey overwrites and deletes an epoch's plaintext key, then leaves a
+// persistent marker.
 //
-// 三步缺一不可：
-//  1. 覆写 —— 对抗「删了但没真删」这类恢复手段
-//  2. 删除
-//  3. **留下标记** —— 否则链上的封装会让密钥被自动解回来，删除变成假动作
+// All three steps are required:
+//  1. overwrite -- against "deleted but not really" recovery paths
+//  2. delete
+//  3. **leave a marker** -- otherwise the wrapped copy on the chain lets the key
+//     be unwrapped again and the deletion becomes a no-op
 //
-// 它对日志型文件系统和闪存的磨损均衡**不构成物理擦除保证** —— 见文件头。
+// It is **not** a physical erase guarantee on journaling filesystems or flash
+// wear levelling -- see the file header.
 func ShredEpochKey(repoDir string, n int) error {
 	dir, err := keyPath(repoDir)
 	if err != nil {
@@ -150,7 +161,7 @@ func ShredEpochKey(repoDir string, n int) error {
 	path := epochFile(dir, n)
 
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		// 没有密钥文件：要么已经丢过（标记在），要么从来没有
+		// No key file: either already discarded (marker present) or never held
 		if IsShredded(repoDir, n) {
 			return nil
 		}
@@ -165,19 +176,19 @@ func ShredEpochKey(repoDir string, n int) error {
 	return writeSecret(shredMarker(dir, n), []byte("1"))
 }
 
-// HasEpochKey 判断本机是否还持有某个 epoch 的明文密钥。
+// HasEpochKey reports whether this machine still holds an epoch's plaintext key.
 func HasEpochKey(repoDir string, n int) bool {
 	_, err := LoadEpochKey(repoDir, n)
 	return err == nil
 }
 
-// HasIdentity 判断本机是否已有加密身份。
+// HasIdentity reports whether this machine already has an encryption identity.
 func HasIdentity(repoDir string) bool {
 	_, err := LoadIdentity(repoDir)
 	return err == nil
 }
 
-// writeSecret 以 0600 原子落盘。
+// writeSecret writes atomically with 0600 permissions.
 func writeSecret(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, keyPerm); err != nil {

@@ -15,24 +15,27 @@ import (
 	"immulog/core/gitx"
 )
 
-// anchorRef 是锚定链的链尾。锚定只追加，永不改写。
+// anchorRef is the tip of the anchor chain. Anchors are append-only, never
+// rewritten.
 const anchorRef = "refs/anchors/latest"
 
-// anchorPrefix 供外部遍历锚定链。
+// anchorPrefix lets external tools walk the anchor chain.
 const anchorPrefix = "refs/anchors/"
 
-// maxReceipt 是外部回执的截断长度。
+// maxReceipt is the truncation length for external receipts.
 const maxReceipt = 512
 
-// Publisher 把快照摘要交给一个**本机之外**的归宿，返回回执。
+// Publisher hands a snapshot digest to a destination **outside this machine**
+// and returns a receipt.
 //
-// 这是「外部锚定」的全部接口。真正的**外部性**来自这一跳：
-// 只要回执落在别人的地盘上，事后谁都无法统一口径。
+// This is the entire "external anchoring" interface. The real **externality**
+// comes from that one hop: once a receipt lives on someone else's turf, nobody
+// can harmonise the story afterwards.
 type Publisher interface {
 	Publish(ctx context.Context, digest string) (receipt string, err error)
 }
 
-// Anchor 是一次锚定。
+// Anchor is one anchoring event.
 type Anchor struct {
 	OID      string    `json:"oid"`
 	Seq      int       `json:"seq"`
@@ -42,11 +45,12 @@ type Anchor struct {
 	External string    `json:"external,omitempty"`
 }
 
-// AnchorNow 把当前快照追加进锚定链。
+// AnchorNow appends the current snapshot to the anchor chain.
 //
-// 每个锚定的 parent 是上一个锚定 —— **链由 git 的哈希链保证**：
-// 想改写历史里的某个锚定，必须连带改写它之后的全部锚定，
-// 而客户端手里可能还留着旧的。这与撤回的处理是同一条哲学。
+// Each anchor's parent is the previous anchor -- **the chain is guarded by
+// git's hash chain**: rewriting an anchor in the middle requires rewriting
+// every anchor after it, and clients may still hold the old ones. Same
+// philosophy as retraction.
 func AnchorNow(ctx context.Context, repo *gitx.Repo, pub Publisher, sign bool) (Anchor, error) {
 	snap, err := Capture(ctx, repo)
 	if err != nil {
@@ -58,16 +62,19 @@ func AnchorNow(ctx context.Context, repo *gitx.Repo, pub Publisher, sign bool) (
 	}
 	now := time.Now().UTC()
 
-	// 外部失败不阻断本地锚定：本地链本身已经有价值
+	// An external failure must not block local anchoring: the local chain has
+	// value on its own
 	receipt := ""
 	if pub != nil {
 		if r, err := pub.Publish(ctx, snap.Digest); err == nil {
-			// 回执是外来字符串：压成单行，否则一个换行就能伪造 trailer
+			// The receipt is a foreign string: collapse it to one line, or a
+			// single newline could forge a trailer
 			receipt = truncate(sanitizeValue(r), maxReceipt)
 		}
 	}
 
-	// 规范文本在前，trailer 块在后，中间空一行 —— 与消息编解码同一套约定
+	// Canonical text first, trailer block last, one blank line between -- the
+	// same convention as message encoding
 	var b strings.Builder
 	b.WriteString(snap.Text)
 	b.WriteByte('\n')
@@ -85,7 +92,7 @@ func AnchorNow(ctx context.Context, repo *gitx.Repo, pub Publisher, sign bool) (
 	if err != nil {
 		return Anchor{}, err
 	}
-	// CAS：并发锚定时不覆盖，重试即可
+	// CAS: concurrent anchoring does not overwrite; just retry
 	if err := repo.UpdateRef(ctx, anchorRef, oid, prev); err != nil {
 		return Anchor{}, err
 	}
@@ -97,7 +104,7 @@ func AnchorNow(ctx context.Context, repo *gitx.Repo, pub Publisher, sign bool) (
 	return Anchor{OID: oid, Seq: seq, Snapshot: snap.Digest, Prev: prev, At: now, External: receipt}, nil
 }
 
-// AnchorHead 读回链尾锚定；从未锚定过时返回零值。
+// AnchorHead reads the latest anchor; zero value if never anchored.
 func AnchorHead(ctx context.Context, repo *gitx.Repo) (Anchor, error) {
 	head, err := repo.Resolve(ctx, anchorRef)
 	if err != nil || head == "" {
@@ -118,16 +125,18 @@ func AnchorHead(ctx context.Context, repo *gitx.Repo) (Anchor, error) {
 	return a, nil
 }
 
-// HTTPPublisher 把摘要 POST 给一个外部服务，把响应体当作回执。
+// HTTPPublisher POSTs the digest to an external service and treats the response
+// body as the receipt.
 //
-// 接 OpenTimestamps 网关、RFC3161 网关、自建公证服务都行 —— 换服务只是换 URL。
-// 这也是唯一需要写代码的"外部"部分：**真正的信任边界在 URL 上**。
+// An OpenTimestamps gateway, an RFC3161 gateway, or your own notary all work --
+// swapping services means swapping a URL. This is also the only part of
+// "external" that needs code: **the trust boundary is the URL**.
 type HTTPPublisher struct {
 	URL    string
 	Client *http.Client
 }
 
-// Publish 实现 Publisher。
+// Publish implements Publisher.
 func (p HTTPPublisher) Publish(ctx context.Context, digest string) (string, error) {
 	client := p.Client
 	if client == nil {
@@ -152,7 +161,7 @@ func (p HTTPPublisher) Publish(ctx context.Context, digest string) (string, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("锚定服务返回 %d", resp.StatusCode)
+		return "", fmt.Errorf("anchor service returned %d", resp.StatusCode)
 	}
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxReceipt))
 	return strings.TrimSpace(string(b)), nil

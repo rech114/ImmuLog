@@ -12,20 +12,23 @@ import (
 	"immulog/core/gitx"
 )
 
-// ErrNoSigningKey 表示仓库没配签名密钥。
-var ErrNoSigningKey = errors.New("未配置 user.signingkey")
+// ErrNoSigningKey means the repository has no signing key configured.
+var ErrNoSigningKey = errors.New("user.signingkey is not configured")
 
-// ErrSigningBroken 表示配了密钥但签不出来 —— 绝不静默降级成不签名。
-var ErrSigningBroken = errors.New("签名密钥不可用")
+// ErrSigningBroken means a key is configured but cannot sign -- we never
+// degrade silently into unsigned commits.
+var ErrSigningBroken = errors.New("signing key is unusable")
 
-// 判定结果的原因码（密钥链条）。
+// Reason code for the key chain.
 const ReasonKeyChanged = "keychain"
 
-// ProbeSigning 真签一次，确认密钥真的可用，并返回其指纹。
+// ProbeSigning actually signs once, confirming the key works, and returns its
+// fingerprint.
 //
-// 配置了 user.signingkey 却签不出来（密钥文件不存在 / 权限不对 /
-// gpg 未安装）是最容易发生的事故：如果静默降级，用户会以为自己在签名，
-// 实际上没有。**这里选择失败即报错，不假装安全。**
+// A configured user.signingkey that cannot sign (missing key file, wrong
+// permissions, gpg not installed) is the easiest accident to have: degrade
+// silently and the user believes they are signing when they are not.
+// **This fails loudly on purpose. It does not pretend to be safe.**
 func ProbeSigning(ctx context.Context, repo *gitx.Repo) (string, error) {
 	key, err := repo.SigningKey(ctx)
 	if err != nil {
@@ -38,8 +41,9 @@ func ProbeSigning(ctx context.Context, repo *gitx.Repo) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 会产生一个游离对象，无所谓 —— 换来的是"签名真的能用"这个确定性
-	oid, err := repo.Commit(ctx, tree, "", "ImmuLog 签名自检\n", true)
+	// This leaves a dangling object; acceptable, in exchange for certainty that
+	// signing really works
+	oid, err := repo.Commit(ctx, tree, "", "ImmuLog signing self-test\n", true)
 	if err != nil {
 		return "", errors.Join(ErrSigningBroken, err)
 	}
@@ -53,7 +57,8 @@ func ProbeSigning(ctx context.Context, repo *gitx.Repo) (string, error) {
 	return c.Key, nil
 }
 
-// KeyAt 读某个提交的签名密钥指纹；未签名或对象不存在时返回空串。
+// KeyAt reads a commit's signing key fingerprint; empty when unsigned or the
+// object is missing.
 func KeyAt(ctx context.Context, repo *gitx.Repo, oid string) (gitx.RawCommit, error) {
 	if oid == "" {
 		return gitx.RawCommit{}, nil
@@ -65,28 +70,31 @@ func KeyAt(ctx context.Context, repo *gitx.Repo, oid string) (gitx.RawCommit, er
 	return raw[0], nil
 }
 
-// CheckKeyChain 校验一段新提交里的密钥链条是否连续。
+// CheckKeyChain verifies that the key chain across a run of new commits is
+// continuous.
 //
-// 规则只有一条：
+// There is exactly one rule:
 //
-//	密钥可以变 —— 但**只有当上一条提交是一条「轮换公告」，
-//	且明文声明了新密钥**时才算合法。
+//	a key may change -- but **only when the preceding commit is a rotation
+//	notice that plainly declares the new key**
 //
-// 于是「换密钥」和「换人」被区分开：合法轮换一定留痕，
-// 没留痕的密钥变更就是攻击。
+// That separates "changed keys" from "changed people": a legitimate rotation
+// always leaves a trace, and a key change with no trace is an attack.
 //
-// prev 是这段之前那一条提交（本地链尾）。它是零值时表示这是首次接触，
-// 此时首个密钥就是初始密钥（TOFU）。
+// prev is the commit just before this run (the local tip). A zero value means
+// first contact, in which case the first key seen is the initial key (TOFU).
 //
-// ⚠️ 一个诚实的边界：若 `prev.Key` 为空（历史全是未签名的），
-// 首次出现的签名密钥无法被任何东西背书 —— 未签名的前缀本来就保护不了。
-// 这种情况会被允许，但调用方应当把它当作"从此才开始可验证"。
+// ⚠️ One honest boundary: if `prev.Key` is empty (the history is entirely
+// unsigned), the first signing key has nothing to vouch for it -- an unsigned
+// prefix cannot be protected after the fact. That case is allowed, but callers
+// should read it as "verifiable only from here on".
 func CheckKeyChain(prev gitx.RawCommit, raw []gitx.RawCommit) (Verdict, error) {
 	carry := prev
 	for _, c := range raw {
 		if c.Key != carry.Key {
-			// 未签名的前缀本来就保护不了：首次出现的密钥只能被接受，
-			// 调用方应据此把它标注为"从此才开始可验证"。
+			// An unsigned prefix cannot be protected: the first key seen can
+			// only be accepted, and callers should label it "verifiable from
+			// here on".
 			unsignedPrefix := carry.Key == ""
 			declared := carry.Declared != "" && carry.Declared == c.Key
 			if !unsignedPrefix && !declared {
@@ -102,7 +110,8 @@ func CheckKeyChain(prev gitx.RawCommit, raw []gitx.RawCommit) (Verdict, error) {
 	return Verdict{OK: true}, nil
 }
 
-// CurrentKey 返回本机 feed 链尾的签名密钥指纹；未签名时为空。
+// CurrentKey returns the signing key fingerprint at the local feed's tip;
+// empty when unsigned.
 func (s *Store) CurrentKey(ctx context.Context) (string, error) {
 	tip, err := s.repo.Resolve(ctx, s.ref)
 	if err != nil || tip == "" {
@@ -115,24 +124,26 @@ func (s *Store) CurrentKey(ctx context.Context) (string, error) {
 	return c.Key, nil
 }
 
-// DeclareKey 追加一条「密钥轮换公告」。
+// DeclareKey appends a signing-key rotation notice.
 //
-// **它用当前（旧）密钥签名，并在 trailer 里声明新密钥的指纹。**
-// 之后的消息再用新密钥签 —— 链条因此连续且可审计。
+// **It is signed with the current (old) key and declares the new key's
+// fingerprint in a trailer.** Messages after it use the new key, so the chain
+// stays continuous and auditable.
 //
-// 顺序很重要：**先公告，再换配置**。
+// Order matters: **announce first, then switch config**.
 //
-//	git config user.signingkey <新密钥>   ← 不要先做这一步
-//	ImmuLog 先调用 DeclareKey(新指纹)
-//	然后才把 user.signingkey 指过去
+//	git config user.signingkey <new key>   <- do NOT do this first
+//	ImmuLog calls DeclareKey(new fingerprint)
+//	then point user.signingkey at it
 //
-// 为什么不让调用方直接传旧密钥路径去签：git 的 ssh 签名里 `-S<keyid>`
-// 解析的是密钥引用而不是指纹，跨密钥签名没有可移植的写法。
-// 因此把顺序约束显式写在这里，而不是假装能自动处理。
+// Why not let the caller pass the old key path and sign with it: for git's ssh
+// signing, `-S<keyid>` resolves a key reference, not a fingerprint, and there
+// is no portable way to cross-sign. So the ordering constraint is written down
+// explicitly here instead of pretending it can be automated.
 func (s *Store) DeclareKey(ctx context.Context, newKey string) (Message, error) {
 	newKey = strings.TrimSpace(newKey)
 	if newKey == "" {
-		return Message{}, errors.New("新密钥不能为空")
+		return Message{}, errors.New("new key must not be empty")
 	}
 	if !s.sign {
 		return Message{}, ErrNoSigningKey
@@ -150,7 +161,7 @@ func (s *Store) DeclareKey(ctx context.Context, newKey string) (Message, error) 
 		return Message{}, ErrNoSigningKey
 	}
 	if oldKey == newKey {
-		return Message{}, errors.New("新旧密钥相同")
+		return Message{}, errors.New("old and new key are the same")
 	}
 
 	s.mu.Lock()
@@ -181,10 +192,10 @@ func (s *Store) DeclareKey(ctx context.Context, newKey string) (Message, error) 
 	}, nil
 }
 
-// renderRotate 生成轮换公告的 commit message。
+// renderRotate builds the commit message for a rotation notice.
 func renderRotate(seq int, newKey string) string {
 	var b strings.Builder
-	b.WriteString("密钥轮换公告\n\n")
+	b.WriteString("signing key rotation\n\n")
 	b.WriteString(trailerKind + ": " + string(KindRotate) + "\n")
 	b.WriteString(trailerSeq + ": " + strconv.Itoa(seq) + "\n")
 	b.WriteString(trailerKey + ": " + sanitizeValue(newKey) + "\n")

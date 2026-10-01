@@ -9,34 +9,35 @@ import (
 	"immulog/core/gitx"
 )
 
-// feed 与 witness 的命名空间。
+// Namespaces for feeds and witness anchors.
 const (
 	FeedPrefix    = "refs/feeds/"
 	witnessPrefix = "refs/witness/"
 )
 
-// FeedRef 由 feed 名构造引用名。
+// FeedRef builds a ref name from a feed name.
 func FeedRef(name string) string { return FeedPrefix + name }
 
-// FeedName 从引用名取回 feed 名。
+// FeedName extracts the feed name from a ref name.
 func FeedName(ref string) string { return strings.TrimPrefix(ref, FeedPrefix) }
 
-// WitnessRef 由 feed 引用派生见证引用。
+// WitnessRef derives the witness ref from a feed ref.
 //
-// 见证锚只由本机推进，**从不推送、从不 fetch** —— 攻击者即使拿到远端控制权
-// 也碰不到它。这是 docs/DESIGN.md §6.3 的 L1。
+// The witness anchor is advanced only by this machine and is **never pushed and
+// never fetched** -- an attacker who takes over a remote still cannot reach it.
+// This is layer L1 from docs/DESIGN.md §6.3.
 func WitnessRef(feedRef string) string {
 	return witnessPrefix + FeedName(feedRef)
 }
 
-// 判定结果的原因码。
+// Reason codes for a verdict.
 const (
-	ReasonRewrite  = "rewrite"  // 链尾不是见证锚的后代（平行链，即 force push）
-	ReasonRollback = "rollback" // 链尾是见证锚的祖先（指回了更早的点）
-	ReasonSplit    = "split"    // 两个远端互相矛盾（分裂视图）
+	ReasonRewrite  = "rewrite"  // tip is not a descendant of the witness (a parallel chain: force push)
+	ReasonRollback = "rollback" // tip is an ancestor of the witness (the chain was pointed backwards)
+	ReasonSplit    = "split"    // two remotes contradict each other (split view)
 )
 
-// Verdict 是一次完整性判定的结果。
+// Verdict is the result of one integrity check.
 type Verdict struct {
 	OK      bool   `json:"ok"`
 	Reason  string `json:"reason,omitempty"`
@@ -46,22 +47,25 @@ type Verdict struct {
 	Current string `json:"current,omitempty"`
 }
 
-// WitnessOf 读某条 feed 的见证锚；未建立时返回空串。
+// WitnessOf reads a feed's witness anchor; empty when none has been established.
 func WitnessOf(ctx context.Context, repo *gitx.Repo, feedRef string) (string, error) {
 	return repo.Resolve(ctx, WitnessRef(feedRef))
 }
 
-// VerifyRef 判定 feedRef 的链尾是否仍以它的见证锚为祖先。
+// VerifyRef decides whether feedRef's tip still has its witness anchor as an
+// ancestor.
 //
-// 对线性 feed 而言一个 git 原语就完备：
+// For a linear feed a single git primitive is complete:
 //
-//	回滚 —— 链尾变成见证锚的**祖先**
-//	改写 —— 两者变成两条无共同后代的链
+//	rollback -- the tip became an **ancestor** of the witness
+//	rewrite  -- the two became chains with no common descendant
 //
-// 两种情况都让 IsAncestor(见证锚, 链尾) 为 false；再反向查一次即可区分，
-// 给出更准确的告警文案（只有异常路径才多一次调用）。
+// Both make IsAncestor(witness, tip) false; one reverse lookup distinguishes
+// them, so the warning text can be accurate. Only the abnormal path pays for
+// the extra call.
 //
-// 一句话概括设计立场：**引用重写不需要「防」，只需要「被发现」。**
+// The design position in one line: **a reference rewrite needs no prevention,
+// only detection.**
 func VerifyRef(ctx context.Context, repo *gitx.Repo, feedRef string) (Verdict, error) {
 	w, err := WitnessOf(ctx, repo, feedRef)
 	if err != nil {
@@ -95,19 +99,20 @@ func VerifyRef(ctx context.Context, repo *gitx.Repo, feedRef string) (Verdict, e
 	return v, nil
 }
 
-// AdvanceWitness 把见证锚推进到 oid。**只在确认一致后调用。**
+// AdvanceWitness moves the witness anchor to oid. **Call only after
+// verification has passed.**
 func AdvanceWitness(ctx context.Context, repo *gitx.Repo, feedRef, oid string) error {
 	return repo.UpdateRef(ctx, WitnessRef(feedRef), oid, "")
 }
 
-// ── Store 上的便捷方法（本机 feed）────────────────────────────────
+// ── Convenience methods on Store (the local feed) ───────────────────
 
-// Witness 返回本机 feed 的见证锚。
+// Witness returns the local feed's witness anchor.
 func (s *Store) Witness(ctx context.Context) (string, error) {
 	return WitnessOf(ctx, s.repo, s.ref)
 }
 
-// Verify 判定本机 feed 是否仍自洽。
+// Verify decides whether the local feed is still self-consistent.
 func (s *Store) Verify(ctx context.Context) (Verdict, error) {
 	return VerifyRef(ctx, s.repo, s.ref)
 }

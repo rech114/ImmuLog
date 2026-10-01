@@ -104,7 +104,7 @@ headline('场景 A · ?demo=1 模拟时间线 → 渲染');
   advance(1000); await flush();
   ok(alice.dataset.state === 'retracted', '撤回后：原条目被标记 retracted（未删除）');
   ok(alice.querySelector('.shape').className.includes('slanted'), '撤回 → 形状切到 slanted');
-  ok(alice.querySelector('.strike-note').textContent.includes('已撤回'), '留痕文案出现');
+  ok(alice.querySelector('.strike-note').textContent.includes('retracted'), '留痕文案出现');
   ok($('.msg').length === 4, '消息总数不变（撤回是追加事件，不是删除）');
 
   // 篡改告警
@@ -214,15 +214,15 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
   await flush();
   ok(one('#anchored-at').textContent.includes('12:00'), 'hello 帧更新外部锚定时间');
   ok(one('#snapshot').textContent.startsWith('abcdef'), 'hello 帧更新快照摘要');
-  ok(one('#identity-chip').textContent === '已签名', 'hello 帧更新签名状态');
+  ok(one('#identity-chip').textContent === 'signed', 'hello 帧更新签名状态');
   ok(one('#identity-line').textContent.includes('SHA256'), 'hello 帧更新密钥指纹');
   ok(one('#peers .kv') !== null, 'hello 帧渲染对端列表');
 
   // 未签名时必须明说"可被冒名"，不粉饰
   FakeES.last.emit('hello', { head: OID, identity: { signed: false } }, '');
   await flush();
-  ok(one('#identity-chip').textContent === '未签名', '未签名时如实标注');
-  ok(one('#identity-line').textContent.includes('可被冒名'), '未签名时给出风险提示');
+  ok(one('#identity-chip').textContent === 'unsigned', '未签名时如实标注');
+  ok(one('#identity-line').textContent.includes('impersonated'), '未签名时给出风险提示');
 
   // 发送：服务端返回 cas_failed
   one('#input').value = '这条会被拒';

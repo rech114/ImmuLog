@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// http.go —— 路由与处理器。只做协议适配，不含领域逻辑，不含传输细节。
+// http.go -- routes and handlers. Protocol adaptation only: no domain logic, no
+// transport details.
 package web
 
 import (
@@ -17,15 +18,15 @@ import (
 	"immulog/core/gitx"
 )
 
-// 每页回放的条数。
+// How many entries to replay per page.
 const (
-	replayFirst   = 50  // 首屏
-	replayResume  = 200 // 断线续传
+	replayFirst   = 50  // first screen
+	replayResume  = 200 // resume after disconnect
 	maxUploadSize = feed.MaxBody * 2
-	pushQueue     = 1 // 推送请求合并：连点只推一次
+	pushQueue     = 1 // coalesce push requests: rapid clicks push once
 )
 
-// Config 是组装 Server 需要的外部依赖。
+// Config holds the dependencies needed to assemble a Server.
 type Config struct {
 	Store     *feed.Store
 	Hub       *Hub
@@ -35,7 +36,7 @@ type Config struct {
 	Publisher feed.Publisher
 }
 
-// Server 把领域层与传输层接起来。
+// Server wires the domain layer to the transport layer.
 type Server struct {
 	store     *feed.Store
 	hub       *Hub
@@ -52,7 +53,7 @@ type Server struct {
 	guardSeen map[string]bool
 }
 
-// New 组装一个 Server。
+// New assembles a Server.
 func New(cfg Config) *Server {
 	return &Server{
 		store:     cfg.Store,
@@ -68,7 +69,7 @@ func New(cfg Config) *Server {
 	}
 }
 
-// Handler 返回完整的路由表。
+// Handler returns the complete route table.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/stream", s.handleStream)
@@ -78,11 +79,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/shred", s.handleShred)
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.Handle("GET /", http.FileServerFS(s.files)) // 同源：零 CORS 配置
+	mux.Handle("GET /", http.FileServerFS(s.files)) // same-origin: zero CORS config
 	return mux
 }
 
-// ── 写入口 ────────────────────────────────────────────────────────
+// ── Write entry ─────────────────────────────────────────────────────
 
 type commitReq struct {
 	Kind     string `json:"kind"`
@@ -91,7 +92,8 @@ type commitReq struct {
 	Reason   string `json:"reason"`
 }
 
-// handleCommit 是唯一的写入口。用 kind 区分事件类型，而不是开多个端点。
+// handleCommit is the only write entry. Events are distinguished by kind rather
+// than by separate endpoints.
 func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
@@ -113,26 +115,28 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 	if code, _ := commitStatus(err); code != 0 {
 		if code >= 500 {
-			s.log.Error("提交失败", "err", err)
+			s.log.Error("commit failed", "err", err)
 		}
 		body := map[string]any{"error": errorCode(err)}
 		if errors.Is(err, gitx.ErrCASFailed) {
-			// 详情是篡改检测的证据，必须原样给出
+			// The detail is the evidence of tampering and must be given verbatim
 			body["detail"] = err.Error()
 		}
 		writeJSON(w, code, body)
 		return
 	}
 
-	s.hub.Broadcast(feedEvent(msg)) // 广播给所有人（含发送者，前端按 OID 去重）
-	s.kick()                        // 后台合并推送，不阻塞请求路径
+	s.hub.Broadcast(feedEvent(msg)) // to everyone, sender included; the UI dedupes by OID
+	s.kick()                        // coalesced background push; never blocks the request path
 	s.refreshSnapshot(r.Context())
 	writeJSON(w, http.StatusCreated, map[string]any{"oid": msg.OID, "seq": msg.Seq})
 }
 
-// commitStatus 把领域错误映射成 HTTP 状态码。err 为 nil 时返回 0。
-// 单独提出来是为了把一条安全契约钉死：
-// **CAS 失败（有人抢先或历史被改写）必须原样上报，绝不能像原型那样只 log 一行。**
+// commitStatus maps domain errors onto HTTP status codes. Returns 0 for nil.
+//
+// It exists separately to pin one security contract down:
+// **a CAS failure (someone got there first, or history was rewritten) must be
+// surfaced verbatim -- never reduced to a log line, as the prototype did.**
 func commitStatus(err error) (int, string) {
 	switch {
 	case err == nil:
@@ -159,7 +163,7 @@ func errorCode(err error) string {
 	return code
 }
 
-// ── 加密世代 ──────────────────────────────────────────────────────
+// ── Encryption epochs ───────────────────────────────────────────────
 
 type encPayload struct {
 	Enabled bool `json:"enabled"`
@@ -177,10 +181,11 @@ func (s *Server) encryption(ctx context.Context) encPayload {
 	return encPayload{Enabled: true, Epoch: cur.N, Held: cur.Held, Members: cur.Members}
 }
 
-// handleNewEpoch 轮换到一个新的加密世代。
+// handleNewEpoch rotates to a fresh encryption epoch.
 //
-// 收件人取「近期历史里见过的加密公钥」（含本机）—— 新成员在发过第一条
-// 消息之后就会被自动带上，而他读不到自己加入之前的世代。
+// Recipients are the encryption public keys seen in recent history (plus this
+// machine) -- a new member is picked up automatically once they have posted a
+// message, and they cannot read any epoch created before they joined.
 func (s *Server) handleNewEpoch(w http.ResponseWriter, r *http.Request) {
 	recips, err := s.store.KnownRecipients(r.Context())
 	if err != nil {
@@ -189,7 +194,7 @@ func (s *Server) handleNewEpoch(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := s.store.RotateEpoch(r.Context(), recips)
 	if err != nil {
-		s.log.Warn("轮换加密世代失败", "err", err)
+		s.log.Warn("epoch rotation failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "epoch_failed"})
 		return
 	}
@@ -201,10 +206,11 @@ type shredReq struct {
 	Epoch int `json:"epoch"`
 }
 
-// handleShred 丢弃本机某个世代的明文密钥。
+// handleShred discards this machine's plaintext key for one epoch.
 //
-// 它**只丢本机这一份**。链上还留着封装给我们的那份，所以丢弃被记成
-// 一个持久决定（见 feed.ShredEpochKey），并且会在链上留下可审计的公告。
+// It **only discards this machine's copy**. The chain still holds the copy
+// wrapped for us, so the discard is recorded as a persistent decision (see
+// feed.ShredEpochKey) and leaves an auditable notice on the chain.
 func (s *Server) handleShred(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 256)
 	var req shredReq
@@ -220,16 +226,16 @@ func (s *Server) handleShred(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"epoch": req.Epoch, "shredded": true})
 }
 
-// ── 密钥轮换 ──────────────────────────────────────────────────────
+// ── Signing key rotation ────────────────────────────────────────────
 
 type rotateReq struct {
 	Key string `json:"key"`
 }
 
-// handleRotate 追加一条密钥轮换公告。
+// handleRotate appends a signing key rotation notice.
 //
-// **由当前（旧）密钥签名，声明新密钥** —— 所以顺序是「先调这个，再改配置」。
-// 详见 feed.Store.DeclareKey 的文档。
+// **Signed by the current (old) key, declaring the new one** -- so the order is
+// "call this first, then change the config". See feed.Store.DeclareKey.
 func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 512)
 
@@ -247,15 +253,17 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 			"oid": msg.OID, "seq": msg.Seq, "kind": "rotate",
 		})
 	case errors.Is(err, feed.ErrNoSigningKey):
-		// 没在签名的 feed 上谈轮换毫无意义 —— 拒绝，而不是悄悄换掉身份
+		// Rotating on a feed that does not sign is meaningless -- refuse, rather
+		// than quietly swapping the identity
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "signing_required"})
 	default:
-		s.log.Warn("轮换失败", "err", err)
+		s.log.Warn("rotation failed", "err", err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "rotate_failed"})
 	}
 }
 
-// kick 请求一次后台推送；已有待处理的请求就合并掉（聚合推送，见 §10 纪律 6）。
+// kick requests one background push; an already-pending request absorbs it
+// (coalesced pushing, see §10 rule 6).
 func (s *Server) kick() {
 	select {
 	case s.pushReq <- struct{}{}:
@@ -263,7 +271,8 @@ func (s *Server) kick() {
 	}
 }
 
-// pushLoop 把本机 feed 推给所有远端。失败不致命 —— 本地提交才是事实。
+// pushLoop pushes the local feed to every remote. Failure is not fatal -- the
+// local commit is the fact.
 func (s *Server) pushLoop(ctx context.Context) {
 	for {
 		select {
@@ -277,18 +286,19 @@ func (s *Server) pushLoop(ctx context.Context) {
 				continue
 			}
 			for name, msg := range feed.Publish(ctx, s.repo, s.remotes, s.store.FeedRef()) {
-				s.log.Warn("推送失败", "remote", name, "err", msg)
+				s.log.Warn("push failed", "remote", name, "err", msg)
 			}
 		}
 	}
 }
 
-// ── 下行 ──────────────────────────────────────────────────────────
+// ── Downstream ──────────────────────────────────────────────────────
 
-// handleStream 首屏历史与断线续传共用同一条代码路径。
+// handleStream uses one code path for both the first screen and
+// resume-after-disconnect.
 //
-// 事件 id 就是 commit OID：浏览器重连时自动带 Last-Event-ID，
-// 于是「续传」不需要任何应用层协议。
+// The event id is the commit OID: the browser sends Last-Event-ID on reconnect,
+// so resuming needs no application-level protocol at all.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	sess, err := NewSession(w)
 	if err != nil {
@@ -310,7 +320,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		limit = replayResume
 	}
 
-	// 先判定再回放：历史若被动过，用户必须在看到任何内容**之前**被告知
+	// Verify before replaying: if the history has been touched, the user must be
+	// told **before** seeing any of it
 	if v, err := s.store.Verify(ctx); err == nil && !v.OK {
 		if ev, ok := alarmEvent(v); ok {
 			_ = sess.Send(ev)
@@ -318,7 +329,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.replay(ctx, sess, since, limit); err != nil {
-		s.log.Warn("回放中断", "err", err)
+		s.log.Warn("replay interrupted", "err", err)
 		return
 	}
 	if err := sess.Send(Event{Type: "hello", Data: s.hello(ctx)}); err != nil {
@@ -350,22 +361,22 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// replay 把历史按从旧到新推送；带 since 时只推它之后的部分。
+// replay pushes history oldest first; with `since`, only what follows it.
 func (s *Server) replay(ctx context.Context, sess *Session, since string, limit int) error {
 	history, err := s.store.History(ctx, limit)
 	if err != nil {
 		return err
 	}
-	end := len(history) // history 是新的在前
+	end := len(history) // history is newest first
 	if since != "" {
 		for i, m := range history {
 			if m.OID == since {
-				end = i // 只推比它更新的
+				end = i // only push what is newer
 				break
 			}
 		}
 	}
-	// 从旧到新：先收集要发的，再逆序发出
+	// Oldest first: collect what to send, then emit in reverse
 	batch := make([]Event, 0, end)
 	for i := 0; i < end; i++ {
 		if ev, ok := feedEventOf(history[i]); ok {
@@ -380,7 +391,7 @@ func (s *Server) replay(ctx context.Context, sess *Session, since string, limit 
 	return nil
 }
 
-// ── 观测 ──────────────────────────────────────────────────────────
+// ── Observability ───────────────────────────────────────────────────
 
 type identityPayload struct {
 	Signed bool   `json:"signed"`
@@ -427,7 +438,7 @@ func (s *Server) hello(ctx context.Context) helloPayload {
 	return p
 }
 
-// handleSnapshot 返回本机对全部 feed 的看法 —— gossip 的交换单位。
+// handleSnapshot returns this node's view of every feed -- the gossip unit.
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, anchor, peers := s.state.Snapshot()
 	if snap.Digest == "" {
@@ -473,18 +484,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── 线协议适配 ────────────────────────────────────────────────────
+// ── Wire-protocol adaptation ────────────────────────────────────────
 
-// feedEventOf 把领域消息翻译成线上事件。撤回不产生新气泡，只更新目标。
+// feedEventOf turns a domain message into a wire event. A retraction produces
+// no new bubble; it only updates its target.
 //
-// 事件里带上 feed：客户端据此保证「撤回只对同一条 feed 内的消息生效」，
-// 于是撤回是作者的权利，而不是谁都能对别人做的事。
+// The event carries `feed`: clients use it to guarantee that **a retraction only
+// applies to messages in the same feed**, which makes retraction the author's
+// right rather than something anyone can do to anyone.
 //
-// 密钥轮换公告是**结构性事件**，不进时间线（它的作用体现在身份区块与
-// 链条校验上），所以返回 false。
+// A key rotation notice is a **structural event** and never enters the timeline
+// (its effect shows up in the identity panel and the chain check), so it
+// returns false.
 func feedEventOf(m feed.Message) (Event, bool) {
 	switch m.Kind {
-	case feed.KindRotate:
+	case feed.KindRotate, feed.KindEpoch, feed.KindShred:
 		return Event{}, false
 	case feed.KindRetract:
 		if m.Retracts == "" {
