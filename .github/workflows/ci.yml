@@ -17,7 +17,12 @@ jobs:
           cache: true
       - name: 依赖必须是零第三方
         run: |
-          test ! -s go.sum -o "$(grep -c '^' go.sum)" -eq 0 || { echo "go.sum 非空，引入了第三方依赖"; exit 1; }
+          if [ -s go.sum ]; then
+            echo "::error::go.sum 非空，引入了第三方依赖："
+            cat go.sum
+            exit 1
+          fi
+          echo "go.sum 不存在（或为空）—— 零第三方依赖 ✓"
           go mod verify
       - run: go build ./...
       - run: go vet ./...

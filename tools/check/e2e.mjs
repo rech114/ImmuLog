@@ -120,14 +120,20 @@ export default async function e2e(browser, _base, c) {
     const body = '端到端冒烟 · ' + Math.random().toString(36).slice(2, 8);
     await page.fill('#input', body);
     await page.click('#send');
+
+    // 关键：乐观投递的临时气泡**立刻**就有文字，所以不能只等文字。
+    // 必须等到落地（非 pending 且 OID 是真实的 40 位对象名）。
     await page.waitForFunction(
-      (t) => [...document.querySelectorAll('.msg .text')].some((e) => e.textContent.includes(t)),
+      (t) => {
+        const el = [...document.querySelectorAll('.msg')].find((e) => e.textContent.includes(t));
+        return !!el && el.dataset.state !== 'pending' && /^[0-9a-f]{40}$/.test(el.dataset.oid);
+      },
       body, { timeout: 15000 },
     );
-    const afterSend = await page.evaluate(() => {
-      const el = [...document.querySelectorAll('.msg')].at(-1);
+    const afterSend = await page.evaluate((t) => {
+      const el = [...document.querySelectorAll('.msg')].find((e) => e.textContent.includes(t));
       return { state: el.dataset.state, oid: el.dataset.oid, shape: el.querySelector('.shape').className };
-    });
+    }, body);
     c.ok(afterSend.state === 'verified', `发送后状态为 verified（实际 ${afterSend.state}）`);
     c.ok(afterSend.shape.includes('gem'), '已验签 → 形状 gem');
     c.ok(/^[0-9a-f]{40}$/.test(afterSend.oid), `DOM 上的 OID 是真实 40 位对象名（${afterSend.oid.slice(0, 8)}…）`);
@@ -151,6 +157,11 @@ export default async function e2e(browser, _base, c) {
     const persisted = await page.evaluate(
       (t) => [...document.querySelectorAll('.msg .text')].some((e) => e.textContent.includes(t)), body);
     c.ok(persisted, '刷新后消息仍在（SSE 首屏回放走的是真实历史）');
+
+    // 乐观投递的去重：最终 DOM 里这条消息只应有一份
+    const dupes = await page.evaluate(
+      (t) => [...document.querySelectorAll('.msg')].filter((e) => e.textContent.includes(t)).length, body);
+    c.ok(dupes === 1, `乐观投递与 SSE 广播按 OID 去重，DOM 里只有一份（实际 ${dupes}）`);
 
     // ── 8) 撤回是追加事件 ───────────────────────────────────────
     const retractResp = await page.evaluate(async (target) => {
