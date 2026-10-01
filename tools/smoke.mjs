@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// tools/smoke.mjs —— 前端冒烟测试（开发工具，不进 embed）
+// tools/smoke.mjs -- frontend smoke test (a dev tool; not part of the embed)
 //
-// 两个场景，都是黑盒：只通过 DOM 事件驱动，不 import 内部符号。
-//   A  ?demo=1   模拟事件流 → 渲染链路
-//   B  无 demo   真实 wiring：EventSource 帧 + fetch 失败路径（cas_failed）
+// Two scenarios, both black-box: driven only through DOM events, importing no
+// internal symbols.
+//   A  ?demo=1   a simulated event stream -> the render chain
+//   B  no demo   real wiring: EventSource frames plus the fetch failure path (cas_failed)
 //
-// 每个场景把 web/app 拷到独立临时目录再 import，避免 ESM 模块缓存串场。
+// Each scenario copies web/app into its own temp directory before importing, so
+// the ESM module cache cannot leak between them.
 
 import { readFile, cp, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -24,7 +26,8 @@ const ok = (cond, label) => {
 const flush = () => new Promise((r) => setImmediate(r));
 const headline = (s) => console.log(`\n${s}`);
 
-// ── 确定性时钟（接管 setTimeout/setInterval，让 mock 时间线可快进）─────
+// ── A deterministic clock (taking over setTimeout/setInterval so the mock
+//    timeline can be fast-forwarded) ─────────────────────────────────
 
 let seq = 0, now = 0;
 const timers = new Map();
@@ -47,7 +50,7 @@ function advance(ms) {
   now = end;
 }
 
-// ── 隔离装载 ──────────────────────────────────────────────────────
+// ── Isolated loading ─────────────────────────────────────────────
 
 async function boot(tag, search) {
   timers.clear(); seq = 0; now = 0;
@@ -61,9 +64,9 @@ async function boot(tag, search) {
   globalThis.document = dom.window.document;
   globalThis.location = dom.window.location;
   globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
-  dom.window.scrollTo = () => { };                   // jsdom 不实现
+  dom.window.scrollTo = () => { };                   // jsdom does not implement this
   dom.window.uiCalls = 0;
-  globalThis.ui = () => { dom.window.uiCalls++; };   // Beer CSS 的 JS：桩
+  globalThis.ui = () => { dom.window.uiCalls++; };   // Beer CSS's JS: a stub
 
   const dir = `/tmp/immulog-smoke-${tag}`;
   await rm(dir, { recursive: true, force: true });
@@ -73,86 +76,86 @@ async function boot(tag, search) {
   return dom;
 }
 
-// ── 场景 A：模拟事件流 → 渲染 ─────────────────────────────────────
+// ── Scenario A: a simulated event stream -> rendering ───────────────
 
-headline('场景 A · ?demo=1 模拟时间线 → 渲染');
+headline('Scenario A - ?demo=1 simulated timeline -> rendering');
 {
   const dom = await boot('a', '?demo=1');
   const $ = (s) => dom.window.document.querySelectorAll(s);
   const one = (s) => dom.window.document.querySelector(s);
 
-  ok($('.msg').length === 0, '初始渲染为空');
+  ok($('.msg').length === 0, 'nothing rendered at first');
 
   advance(300); await flush();
-  ok($('.msg').length === 1, '创世消息上屏');
-  ok(one('#room-id').textContent !== '——', `房间身份 = 创世 OID 前 6 位（${one('#room-id').textContent}）`);
+  ok($('.msg').length === 1, 'the genesis message appears');
+  ok(one('#room-id').textContent !== '--', `room identity = first 6 hex of the genesis OID (${one('#room-id').textContent})`);
 
   advance(600); await flush();
-  ok($('.msg').length === 2, '第二条消息追加');
+  ok($('.msg').length === 2, 'the second message is appended');
 
   advance(600); await flush();
   const bob = $('.msg')[2];
-  ok(bob && bob.dataset.state === 'verified', 'bob 的消息为已验签');
-  ok(bob && bob.querySelector('.shape').className.includes('gem'), '已验签 → 形状 gem');
+  ok(bob && bob.dataset.state === 'verified', 'bob\'s message is verified');
+  ok(bob && bob.querySelector('.shape').className.includes('gem'), 'verified -> shape gem');
 
   advance(700); await flush();
-  ok($('.msg').length === 4, '第四条消息追加');
+  ok($('.msg').length === 4, 'the fourth message is appended');
 
-  // 撤回
+  // Retraction
   const alice = $('.msg')[1];
-  ok(alice.dataset.state === 'verified', '撤回前：alice 消息为 verified');
+  ok(alice.dataset.state === 'verified', 'before retraction: alice\'s message is verified');
   advance(1000); await flush();
-  ok(alice.dataset.state === 'retracted', '撤回后：原条目被标记 retracted（未删除）');
-  ok(alice.querySelector('.shape').className.includes('slanted'), '撤回 → 形状切到 slanted');
-  ok(alice.querySelector('.strike-note').textContent.includes('retracted'), '留痕文案出现');
-  ok($('.msg').length === 4, '消息总数不变（撤回是追加事件，不是删除）');
+  ok(alice.dataset.state === 'retracted', 'after retraction: the original entry is marked retracted, not deleted');
+  ok(alice.querySelector('.shape').className.includes('slanted'), 'retraction -> the shape switches to slanted');
+  ok(alice.querySelector('.strike-note').textContent.includes('retracted'), 'the strike-through note appears');
+  ok($('.msg').length === 4, 'the message count is unchanged (retraction appends, it does not delete)');
 
-  // 篡改告警
+  // Tampering alarm
   advance(1400); await flush();
-  ok($('.alarm').length === 1, '告警作成封条插入时间线');
-  ok(one('.alarm .shape').className.includes('burst'), '告警 → 形状 burst');
-  ok(one('#alarm-log .kv') !== null, '告警同时进入完整性页签的告警记录');
-  ok(one('#alarm-log .placeholder') === null, '告警记录里的「无」占位符被清除（不残留）');
+  ok($('.alarm').length === 1, 'the alarm is sealed into the timeline');
+  ok(one('.alarm .shape').className.includes('burst'), 'alarm -> shape burst');
+  ok(one('#alarm-log .kv') !== null, 'the alarm also lands in the integrity tab log');
+  ok(one('#alarm-log .placeholder') === null, 'the "none" placeholder is cleared from the alarm log');
 
-  // 心跳
+  // Heartbeat
   advance(9000); await flush();
-  ok($('.msg').length === 6, '心跳消息到达（时间线是活的）');
+  ok($('.msg').length === 6, 'a heartbeat message arrives (the timeline is live)');
 
-  // 视图切换
+  // View switching
   one('#views button[data-view="integrity"]').click();
-  ok(one('.view[data-view="integrity"]').classList.contains('active'), '切到「完整性」页签');
-  ok(!one('.view[data-view="chat"]').classList.contains('active'), '「消息」页签已失活');
-  ok(one('#anchor-count').textContent !== '0', `见证锚计数已更新（${one('#anchor-count').textContent}）`);
+  ok(one('.view[data-view="integrity"]').classList.contains('active'), 'switching to the integrity tab');
+  ok(!one('.view[data-view="chat"]').classList.contains('active'), 'the messages tab is deactivated');
+  ok(one('#anchor-count').textContent !== '0', `the witness anchor count updated (${one('#anchor-count').textContent})`);
 
-  // 主题
+  // Theme
   const before = dom.window.document.body.classList.contains('dark');
   one('#theme').click();
-  ok(dom.window.document.body.classList.contains('dark') !== before, '明暗主题可切换');
-  ok(dom.window.uiCalls > 0, '动态主题色已下发给 Beer CSS');
+  ok(dom.window.document.body.classList.contains('dark') !== before, 'light and dark themes switch');
+  ok(dom.window.uiCalls > 0, 'the dynamic theme colour was handed to Beer CSS');
 
-  // 乐观投递
+  // Optimistic delivery
   const dupBefore = $('.msg').length;
-  one('#input').value = '冒烟测试';
+  one('#input').value = 'smoke test';
   one('#send').click();
   await flush();
   const mine = [...$('.msg')].at(-1);
-  ok(mine.querySelector('.text').textContent.includes('冒烟测试'), '乐观投递：消息先上屏');
-  ok($('.msg').length === dupBefore + 1, '只多一条');
+  ok(mine.querySelector('.text').textContent.includes('smoke test'), 'optimistic delivery: the message renders first');
+  ok($('.msg').length === dupBefore + 1, 'exactly one more message');
   const pendingShape = mine.querySelector('.shape').className;
-  ok(pendingShape.includes('loading-indicator'), '未落地 → 形状 loading-indicator');
-  ok(mine.dataset.state === 'pending', '未落地 → 状态 pending');
-  ok(mine.dataset.oid.startsWith('local-'), '未落地 → 还是临时 OID');
+  ok(pendingShape.includes('loading-indicator'), 'not landed -> shape loading-indicator');
+  ok(mine.dataset.state === 'pending', 'not landed -> state pending');
+  ok(mine.dataset.oid.startsWith('local-'), 'not landed -> still the temporary OID');
 
   advance(500); await flush();
-  ok(mine.dataset.state === 'verified', '落地后原地转 verified');
-  ok(mine.dataset.oid.length === 40, '临时 OID 已换成真实 40 位哈希');
-  ok(mine.querySelector('.shape').className.includes('gem'), '落地后形状 → gem（原地替换，气泡不跳）');
-  ok(one('#input').value === '', '输入框已清空');
+  ok(mine.dataset.state === 'verified', 'lands and turns verified in place');
+  ok(mine.dataset.oid.length === 40, 'the temporary OID became a real 40-char hash');
+  ok(mine.querySelector('.shape').className.includes('gem'), 'shape becomes gem after landing (in place; the bubble does not jump)');
+  ok(one('#input').value === '', 'the input is cleared');
 }
 
-// ── 场景 B：真实 wiring（SSE 帧 + CAS 失败）───────────────────────
+// ── Scenario B: real wiring (SSE frames plus a CAS failure) ─────────
 
-headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
+headline('Scenario B - no demo: EventSource frames + the fetch failure path');
 {
   class FakeES {
     constructor(url) { this.url = url; this.listeners = {}; FakeES.last = this; }
@@ -176,35 +179,36 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
   const FEED = 'refs/feeds/alice';
   const OTHER_FEED = 'refs/feeds/mallory';
 
-  ok(FakeES.last !== undefined, '已建立 SSE 连接');
-  ok(FakeES.last.url === '/api/stream', '连到 /api/stream');
-  ok($('.msg').length === 0, '初始为空（不伪造首屏）');
+  ok(FakeES.last !== undefined, 'an SSE connection was opened');
+  ok(FakeES.last.url === '/api/stream', 'connected to /api/stream');
+  ok($('.msg').length === 0, 'nothing rendered at first (no faked first screen)');
 
-  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: '来自真实流' }, OID);
+  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: 'from the real stream' }, OID);
   await flush();
-  ok($('.msg').length === 1, 'SSE 帧渲染成消息');
-  ok(one('.msg .text').textContent.includes('来自真实流'), '正文正确');
+  ok($('.msg').length === 1, 'an SSE frame renders as a message');
+  ok(one('.msg .text').textContent.includes('from the real stream'), 'the body is correct');
 
-  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: '来自真实流' }, OID);
+  FakeES.last.emit('msg', { oid: OID, seq: 1, author: 'alice', feed: FEED, body: 'from the real stream' }, OID);
   await flush();
-  ok($('.msg').length === 1, '相同 OID 去重，不重复渲染');
+  ok($('.msg').length === 1, 'the same OID dedupes and is not rendered twice');
 
-  // 跨越 feed 的撤回必须被忽略：撤回是作者的权利，不是谁都能对别人做的
+  // A cross-feed retraction must be ignored: retraction is the author's right,
+  // not something anyone can do to anyone
   FakeES.last.emit('retract',
-    { oid: 'e'.repeat(40), feed: OTHER_FEED, retracts: OID, reason: '越权撤回' }, 'e'.repeat(40));
+    { oid: 'e'.repeat(40), feed: OTHER_FEED, retracts: OID, reason: 'unauthorised retraction' }, 'e'.repeat(40));
   await flush();
-  ok(one('.msg').dataset.state === 'verified', '别的 feed 发来的撤回被忽略（撤回只对同 feed 生效）');
+  ok(one('.msg').dataset.state === 'verified', 'a retraction from another feed is ignored (retraction applies within one feed)');
 
   FakeES.last.emit('retract',
-    { oid: 'b'.repeat(40), feed: FEED, retracts: OID, reason: '说错了' }, 'b'.repeat(40));
+    { oid: 'b'.repeat(40), feed: FEED, retracts: OID, reason: 'got it wrong' }, 'b'.repeat(40));
   await flush();
-  ok(one('.msg').dataset.state === 'retracted', '同 feed 的撤回帧生效');
-  ok(one('.msg .strike-note').textContent.includes('说错了'), '撤回原因上屏');
+  ok(one('.msg').dataset.state === 'retracted', 'a retraction frame from the same feed takes effect');
+  ok(one('.msg .strike-note').textContent.includes('got it wrong'), 'the retraction reason is shown');
 
   FakeES.last.emit('alarm',
-    { oid: 'c'.repeat(40), title: '检测到历史改写', local: '111111', remote: '222222' }, 'c'.repeat(40));
+    { oid: 'c'.repeat(40), title: 'History rewrite detected', local: '111111', remote: '222222' }, 'c'.repeat(40));
   await flush();
-  ok($('.alarm').length === 1, 'SSE 告警帧生效');
+  ok($('.alarm').length === 1, 'an SSE alarm frame takes effect');
 
   FakeES.last.emit('hello', {
     head: OID, snapshot: 'abcdef1234567890', anchoredAt: '2026-10-01 12:00',
@@ -212,32 +216,33 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
     peers: [{ name: 'hub', url: 'git@node-b', ok: true }],
   }, '');
   await flush();
-  ok(one('#anchored-at').textContent.includes('12:00'), 'hello 帧更新外部锚定时间');
-  ok(one('#snapshot').textContent.startsWith('abcdef'), 'hello 帧更新快照摘要');
-  ok(one('#identity-chip').textContent === 'signed', 'hello 帧更新签名状态');
-  ok(one('#identity-line').textContent.includes('SHA256'), 'hello 帧更新密钥指纹');
-  ok(one('#peers .kv') !== null, 'hello 帧渲染对端列表');
+  ok(one('#anchored-at').textContent.includes('12:00'), 'the hello frame updates the anchoring time');
+  ok(one('#snapshot').textContent.startsWith('abcdef'), 'the hello frame updates the snapshot digest');
+  ok(one('#identity-chip').textContent === 'signed', 'the hello frame updates the signing state');
+  ok(one('#identity-line').textContent.includes('SHA256'), 'the hello frame updates the key fingerprint');
+  ok(one('#peers .kv') !== null, 'the hello frame renders the peer list');
 
-  // 未签名时必须明说"可被冒名"，不粉饰
+  // When unsigned it must say plainly that impersonation is possible
   FakeES.last.emit('hello', { head: OID, identity: { signed: false } }, '');
   await flush();
-  ok(one('#identity-chip').textContent === 'unsigned', '未签名时如实标注');
-  ok(one('#identity-line').textContent.includes('impersonated'), '未签名时给出风险提示');
+  ok(one('#identity-chip').textContent === 'unsigned', 'unsigned is labelled honestly');
+  ok(one('#identity-line').textContent.includes('impersonated'), 'unsigned carries a risk note');
 
-  // 发送：服务端返回 cas_failed
-  one('#input').value = '这条会被拒';
+  // Sending: the server returns cas_failed
+  one('#input').value = 'this one will be rejected';
   one('#send').click();
   await flush(); await flush();
 
-  ok(fetchCalls.length === 1, '写入口只发一次请求');
-  ok(fetchCalls[0].url === '/api/commit', 'POST 到 /api/commit');
-  ok(fetchCalls[0].body.kind === 'msg', 'kind 区分事件类型');
-  ok(one('.msg[data-state="unverified"]') !== null, 'cas_failed → 消息标记为未验签');
-  ok(one('#toast').classList.contains('active'), 'cas_failed 未被吞掉，已提示用户');
-  ok(one('#toast-text').textContent.includes('cas_failed'), `提示文案含错误码（${one('#toast-text').textContent}）`);
+  ok(fetchCalls.length === 1, 'the write entry issues exactly one request');
+  ok(fetchCalls[0].url === '/api/commit', 'POSTs to /api/commit');
+  ok(fetchCalls[0].body.kind === 'msg', 'kind distinguishes the event type');
+  ok(one('.msg[data-state="unverified"]') !== null, 'cas_failed -> the message is marked unverified');
+  ok(one('#toast').classList.contains('active'), 'cas_failed was not swallowed; the user was told');
+  ok(one('#toast-text').textContent.includes('cas_failed'), `the notice carries the error code (${one('#toast-text').textContent})`);
 }
 
-// ── 样式表完整性：CSS 没有 // 注释，一行误写会静默吃掉后面整条规则 ──
+// ── Stylesheet integrity: CSS has no // comments, and one stray line
+//    silently eats every rule after it ───────────────────────────────
 {
   const { readFile } = await import('node:fs/promises');
   const { JSDOM } = await import('jsdom');
@@ -252,36 +257,36 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
     .map((r) => r.selectorText)
     .filter(Boolean);
 
-  // ① 花括号平衡
+  // 1) brace balance
   let depth = 0;
   for (const ch of css) {
     if (ch === '{') depth++;
     if (ch === '}') depth--;
     if (depth < 0) break;
   }
-  ok(depth === 0, `style.css 花括号平衡 (depth=${depth})`);
+  ok(depth === 0, `style.css braces balance (depth=${depth})`);
 
-  // ② 没有选择器被 // 污染（CSS 不支持 // 注释）
+  // 2) no selector is polluted by a // comment (CSS has none)
   const polluted = selectors.filter((s) => s.includes('//'));
-  ok(polluted.length === 0, `没有选择器被 // 注释污染 (${polluted.length} 条)`,
+  ok(polluted.length === 0, `no selector is polluted by a // comment (${polluted.length})`,
     { polluted: polluted.slice(0, 3) });
 
-  // ③ 关键规则必须真的在表里——写错一个字就会整条消失
+  // 3) critical rules must really be in the sheet -- one typo deletes a rule
   const critical = [
     '.kv', '.kv>i', '.kv strong', '.kv p',
     '.msg', '.msg .text', '.alarm', '.shape',
     '[data-state="verified"]', 'p.no-margin',
   ];
   const missing = critical.filter((want) => !selectors.some((s) => s.replace(/\s+/g, '').includes(want.replace(/\s+/g, ''))));
-  ok(missing.length === 0, `关键规则全部解析成功 (${selectors.length} 条规则)`, { missing });
+  ok(missing.length === 0, `every critical rule parsed (${selectors.length} rules)`, { missing });
 
-  // ④ .kv 必须是横向 flex——它决定完整性页的整页骨架
+  // 4) .kv must be a horizontal flex container -- it is the integrity panel's skeleton
   const kv = selectors.find((s) => s === '.kv');
-  ok(kv === '.kv', '.kv 规则的选择器干净（未被前一行吃掉）', { found: kv });
+  ok(kv === '.kv', 'the .kv selector is clean (not eaten by the preceding line)', { found: kv });
 }
 
-// ── 结果 ──────────────────────────────────────────────────────────
+// ── Result ─────────────────────────────────────────────────────────
 
-console.log(`\n${'─'.repeat(52)}`);
-console.log(failed === 0 ? `\u2705 全量冒烟通过  ${passed} 项` : `\u274c ${failed} 项失败 / ${passed} 项通过`);
+console.log(`\n${'\u2500'.repeat(52)}`);
+console.log(failed === 0 ? `\u2705 full smoke passed  ${passed} checks` : `\u274c ${failed} failed / ${passed} passed`);
 process.exit(failed === 0 ? 0 : 1);
