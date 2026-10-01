@@ -737,16 +737,33 @@ immutalk/
 
 ## 11. 路线图
 
-| 阶段 | 内容 | 影响范围 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| **0** | `os/exec` 取代 go-git；`commit-tree` + `update-ref` CAS 写路径 | `gitx/` |
-| **1** | per-user feed 模型；trailer 元数据；删掉 fsnotify | `feed/` |
-| **2** | SSE 取代 WebSocket；Gin 换成 `net/http`；**依赖降到 0** | `web/` |
-| **3** | commit 签名（`gpg.format=ssh`）+ 本地见证锚 + `alarm` 事件 | `feed/verify.go` |
-| **4** | 快照 gossip + Merkle 一致性证明 + 外部锚定 | 新增 `feed/gossip.go` |
-| **5** | epoch 密钥加密（crypto-shredding，实现「可遗忘」） | 新增 `feed/crypto.go` |
+| **0** | `os/exec` + `commit-tree` + `update-ref` CAS 写路径 | ✅ |
+| **1** | per-user feed 模型；trailer 元数据 | ✅ |
+| **2** | SSE（零依赖）；`net/http`；**依赖降到 0** | ✅ |
+| **3** | 本地见证锚 + 引用重写检测 + `alarm` 事件 | ✅ |
+| **3′** | commit 签名（`gpg.format=ssh`）—— 已接线，待配置密钥 | 🔶 |
+| **4** | 快照 gossip + Merkle 一致性证明 + 外部锚定；多源 fetch | ⬜ |
+| **5** | epoch 密钥加密（crypto-shredding，实现「可遗忘」） | ⬜ |
 
-**每个阶段都能独立跑起来，都能回滚。** 先拿到最大的收益（阶段 0–2 即可得到一个可用的、零依赖的、原版 Git 的聊天），再谈密码学。
+**每个阶段都能独立跑起来，都能回滚。**
+
+### 实现记录（阶段 0–3）
+
+| | |
+|---|---|
+| 代码 | Go，**零第三方依赖**（`go.sum` 不存在） |
+| 测试 | 44 个 Go 用例（`-race`）＋ 99 项浏览器/端到端断言 |
+| CI | 三个 job：`go` / `smoke` / `browser`，全部在 x86_64 runner 上 |
+
+**真实二进制冒烟抓出的两个 bug**（单元测试没覆盖到，因为都出在边界）：
+
+1. **空正文被接受** —— 移植时漏掉了原型里那条校验，且空正文会让 commit message 以空行开头，
+   导致 git 的 trailer 解析失效、`Seq` 读成空串。现在 `Send` 拒绝空/纯空白，`render` 也保证首段非空。
+2. `RefInfo` 缺 json tag，`/api/snapshot` 返回大写字段名。
+
+> **教训：单元测试全绿 ≠ 能跑。** 边界（空输入、真实进程、真实仓库）只有把二进制跑起来才暴露。
 
 ---
 
