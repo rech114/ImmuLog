@@ -1,321 +1,449 @@
 # ImmuLog
 
-把 Git 当作信任根的聊天系统。**撤回可证明，而非不可删除。**
+**一个基于 Git 的聊天系统，用可验证的历史记录保存消息。**
 
-> 攻击者可以拒绝服务、可以拖慢你，但**做不到静默地**删除、回滚或改写历史。
-> 他每一次动手，都会在聊天流里长出一条你自己生成、他删不掉的**系统消息**。
+[![CI](https://github.com/rech114/ImmuLog/actions/workflows/ci.yml/badge.svg)](https://github.com/rech114/ImmuLog/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.24-00ADD8.svg)](go.mod)
+[![Go dependencies](https://img.shields.io/badge/Go%20dependencies-0-brightgreen.svg)](go.mod)
 
-完整设计见 **[docs/DESIGN.md](docs/DESIGN.md)**。
+Read this in [English](README.md).
 
 ---
 
-## 技术选型
+ImmuLog 把每条消息存成一个 Git commit。每个节点都保留一份本地历史，因此中转节点仍然可以拒绝服务或停止同步，但已经保存过旧历史的节点可以检测到后续的历史改写。
 
-| | |
-|---|---|
-| 后端 | **Go + 原版 Git CLI**（`os/exec`，不用 go-git / libgit2） |
-| **第三方依赖** | **0**（`go.sum` 不存在） |
-| 前端 | **Beer CSS 5.0.3**（CDN）+ 原生 ES modules，**无构建链** |
-| 通信 | 上行 `POST` + 下行 **SSE** |
+Web 界面把这套历史呈现成聊天记录。消息可以使用 Git SSH 签名，可以通过普通 Git remote 在多个节点之间同步，也可以比较不同节点看到的历史是否发生冲突。
 
-## 状态
+## 功能
 
-| 部分 | 状态 |
-|---|---|
-| 设计文档 | ✅ 15 节 |
-| 前端界面 | ✅ 可运行 |
-| 后端 | ✅ 完成 |
-| 多源同步 / 快照 / 锚定链 | ✅ 完成 |
-| 签名 / 密钥轮换 | ✅ 完成 |
-| **端到端加密 / 可遗忘** | ✅ 完成 |
+- 基于 Git 的追加式消息 feed
+- 使用 Git SSH 签名认证消息
+- 本地 witness anchor，用于检测历史改写
+- 多源同步：先进入隔离区，再校验，只允许 fast-forward
+- 多节点之间的 split-view 检测
+- 可选的外部锚定服务
+- 可选的消息体加密，使用按 epoch 划分的密钥
+- 撤回通过追加事件实现，不直接删除原始对象
+- 前端嵌入二进制，部署时无需 Node.js
+- Go 模块没有第三方依赖，前端运行时也不访问外部网络
 
-## 跑起来
+## 快速开始
+
+需要 **Go 1.24+**，以及 `PATH` 中可用的 **`git` 命令**。
 
 ```bash
+git clone https://github.com/rech114/ImmuLog.git
+cd ImmuLog
 go build -o immulog .
-./immulog                      # 监听 :8081，仓库默认为 ./repoDB
 ```
 
-需要先在 git config 里有身份：
+ImmuLog 从本机 Git 配置读取身份：
 
 ```bash
-git config --global user.name "你的名字"
+git config --global user.name  "你的名字"
 git config --global user.email "you@example.com"
 ```
 
-### 签名（强烈建议）
+启动：
 
-没有签名时，`author` 字段只是装饰品——任何能推送的人都能冒名。开启方式：
+```bash
+./immulog
+```
+
+默认监听 http://localhost:8081，Git 仓库默认使用 `./repoDB`。
+
+前端会直接嵌入二进制，运行节点不需要安装 Node.js。
+
+## 签名
+
+签名不是强制的，但没有签名密钥时，Git 的 `author` 字段并不能证明身份。
+
+使用 SSH 密钥签名：
 
 ```bash
 git config --global gpg.format ssh
 git config --global user.signingkey ~/.ssh/id_ed25519.pub
-# 让 git 能判定"这个签名有效、属于谁"（否则状态只是"密钥未知"）
-printf '%s %s\n' "you@example.com" "$(cat ~/.ssh/id_ed25519.pub)" > ~/.config/immulog/allowed_signers
+
+mkdir -p ~/.config/immulog
+printf '%s %s\n' "you@example.com" "$(cat ~/.ssh/id_ed25519.pub)" \
+  > ~/.config/immulog/allowed_signers
+
 git config --global gpg.ssh.allowedSignersFile ~/.config/immulog/allowed_signers
 ```
 
-**配了密钥但签不出来时，服务会拒绝启动**，而不是悄悄发出没有签名的消息：
+如果配置了签名密钥，但 Git 实际无法使用它，ImmuLog 会拒绝启动，而不是继续创建未签名消息。
 
-```
-启动失败 err=user.signingkey 已配置但无法签名：签名密钥不可用: ...
-  修好它，或清空该配置以明确地以「不签名」身份运行
-```
+没有配置签名密钥时，启动日志和 Integrity 页面都会明确提示身份可能被冒名。
 
-未配置密钥时，启动日志与「完整性」页都会**明说"身份可被冒名"**——它不假装安全。
+## 密钥轮换
 
-**换密钥**（顺序不能反）：
+密钥更换必须由旧密钥签名的轮换公告完成。
 
 ```bash
 ssh-keygen -t ed25519 -C you@example.com -f ~/.ssh/new_key
-ssh-keygen -lf ~/.ssh/new_key.pub        # 拿到指纹，形如 SHA256:...
-# 1) 先发轮换公告（用当前这把旧密钥签名）
-curl -XPOST localhost:8081/api/rotate -d '{"key":"SHA256:..."}'
-# 2) 再把配置指过去
+ssh-keygen -lf ~/.ssh/new_key.pub
+
+curl -XPOST localhost:8081/api/rotate \
+  -d '{"key":"SHA256:..."}'
+
 git config --global user.signingkey ~/.ssh/new_key.pub
 ```
 
-轮换公告由**旧密钥**签名并声明新密钥；链条因此连续可审计。
-任何**没有公告背书**的密钥变更都会被同步方判为攻击并保留告警。
+轮换公告把旧密钥和新密钥连接起来。没有有效轮换公告的密钥变化会在同步检查中被拒绝。
 
-### 环境变量
+## 多节点
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `IMMULOG_REPO` | `./repoDB` | 仓库目录（自动 `git init --bare`） |
-| `PORT` | `8081` | 监听端口 |
-| `IMMULOG_REMOTES` | 空 | 同步源，逗号分隔。`url` 或 `name=url`，走 git 自己的 transport（ssh/https/file/git） |
-| `IMMULOG_ANCHOR_URL` | 空 | 外部锚定服务。收到 `POST {snapshot, at}` 后把响应体当回执记进锚定链 |
-| `IMMULOG_SYNC_INTERVAL` | `5s` | 同步间隔 |
-| `IMMULOG_ANCHOR_INTERVAL` | `60s` | 锚定间隔 |
-| `IMMULOG_ENCRYPT` | 空 | 设为 `1` 启用端到端加密。**一旦启用就粘住**（见下） |
+任何支持 Git fetch/push 的仓库都可以作为中转。
 
-两个「没配」都会在启动时**明确警告**，不假装安全：
-
-```
-WARN 未配置 IMMULOG_REMOTES：单节点模式，不会与任何对端同步
-WARN 未配置 IMMULOG_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定
-```
-
-### 多节点示例
+例如使用本地 bare repository：
 
 ```bash
-# 一个共享中转（任何 git 托管都行）
 git init --bare /srv/chat.git
 
-# 节点 A
-IMMULOG_REPO=./a IMMULOG_REMOTES=hub=/srv/chat.git PORT=8081 ./immulog
-# 节点 B
-IMMULOG_REPO=./b IMMULOG_REMOTES=hub=/srv/chat.git PORT=8082 ./immulog
+IMMULOG_REPO=./a \
+IMMULOG_REMOTES=hub=/srv/chat.git \
+PORT=8081 \
+./immulog
+
+IMMULOG_REPO=./b \
+IMMULOG_REMOTES=hub=/srv/chat.git \
+PORT=8082 \
+./immulog
 ```
 
-每个节点把自己的 feed 推到中转站，并从**所有**中转站拉取、逐条校验、只允许快进。
-配多个中转站时，它们之间互相矛盾会被判为**分裂视图**并告警。
+每个节点都会发布自己的 feed，并从配置的 remote 拉取其他 feed。
 
-### 只看界面（不需要后端）
+网络数据首先进入隔离区 ref。只有通过本地检查，并且能够以 fast-forward 方式推进的历史，才会进入正常 feed。
 
-```bash
-cd web && python3 -m http.server 8099
-# http://127.0.0.1:8099/?demo=1
-```
+当两个 remote 为同一个 feed 提供互相冲突的历史时，ImmuLog 会报告 split view（分裂视图），不会静默地任选其中一个。
 
-`?demo=1` 走 `app/mock.js`；去掉它就是真实后端。
+## 消息体加密
 
----
-
-## 原版 Git 白送的能力
-
-```bash
-# 无 index / 无 worktree / 无锁地造一条「消息」
-echo "第二条消息" | git commit-tree <tree> -p <parent>
-
-# 原生的「见证锚」：old 不匹配就拒绝（exit 128）→ 就是我们的 cas_failed
-git update-ref refs/feeds/alice <new> <old>
-
-# 引用重写的判定：见证锚不再是链尾的祖先
-git merge-base --is-ancestor <witness> <tip>
-
-# 一次调用拿到全部 feed 锚点（gossip 快照数据源）
-git for-each-ref --format='%(refname)%1f%(objectname)' refs/feeds/
-```
-
----
-
-## 目录
-
-```
-immulog/
-├── go.mod                  零第三方依赖（没有 go.sum）
-├── main.go                 组装与生命周期
-├── docs/DESIGN.md
-├── core/                   ← 可被外部导入的库
-│   ├── gitx/               唯一允许出现 os/exec 的包
-│   │   ├── exec.go         子进程边界：stdin 注入、超时、错误归一、Init
-│   │   ├── object.go       commit-tree / hash-object / log / trailer 读取
-│   │   ├── ref.go          CAS 读写 / for-each-ref / is-ancestor / count
-│   │   └── transport.go    fetch / push（复用 git 自己的 transport）
-│   └── feed/               领域语义：把 git 仓库变成可验证的消息日志
-│       ├── feed.go         消息编解码 + 发送 / 撤回 / 历史
-│       ├── key.go          签名自检、密钥链条、轮换公告
-│       ├── verify.go       见证锚与引用重写检测
-│       ├── snapshot.go     快照摘要与分裂视图判定
-│       ├── sync.go         多源同步：隔离区 → 校验 → 快进
-│       └── anchor.go       锚定链与外部锚定接口
-├── internal/web/           传输
-│   ├── http.go             路由与处理器（net/http）
-│   ├── sse.go              EventSource 流（零依赖）
-│   └── guard.go            后台循环：巡检 / 同步 / 锚定
-└── web/                    前端，//go:embed
-    ├── index.html
-    ├── style.css
-    └── app/                main / stream / api / store / render / mock
-```
-
-> **架构约束：同一条原则镜像到两侧。**
-> 后端 `core/gitx` 是唯一能碰 `os/exec` 的包；前端 `stream` 是唯一能碰 `EventSource` 的文件。
-
-`core/` 刻意不在 `internal/` 下 —— Go 禁止导入 `internal/`，
-放在那里会让 Apache 授权变成一纸空文。
-
----
-
-## 端到端加密
-
-**默认关闭。** 打开：
+默认关闭。
 
 ```bash
 IMMULOG_ENCRYPT=1 ./immulog
 ```
 
-开启后：
+启用后，消息正文会在写入 Git object 前进行加密。epoch 密钥与 Git 仓库分开保存，并使用收件人的加密公钥分别进行封装。
 
-| | |
-|---|---|
-| 消息正文 | AEAD 加密后进 git 对象。**任何拿到副本的人都只能看到密文** |
-| 密钥 | 按 epoch 分组，用**每个收件人的公钥各封一份** → `refs/keys/<n>` |
-| 明文密钥 | **只存本机** `<repo>/immulog-keys/`，不进 git、不参与同步 |
-| 元数据 | 作者、时间、序号、哈希链**保持公开**——否则链就不可验证了 |
+| 数据 | 保存位置 |
+|------|----------|
+| 消息正文 | 加密后的 Git object |
+| epoch 密钥 | 本机密钥存储 |
+| 收件人密钥封装 | Git 元数据 |
+| 作者、时间、序号、OID | 公开元数据 |
 
-```
-$ git cat-file commit <oid>
-  ... 看不到明文 ...
-  ImmuLog-Kind: msg
-  ImmuLog-Seq: 1
-  ImmuLog-Epoch: 1
-```
+每个 epoch 使用独立密钥。新成员只能获得加入之后创建的 epoch 的访问能力，后续 epoch 的密钥泄露也不会直接得到之前 epoch 的密钥。
 
-**一旦开启就粘住**：只要本机存在加密身份，重启时会自动继续加密。
-否则忘了带环境变量，后续消息会悄悄退回明文——而话一旦说出去就收不回来了。
+## 丢弃密钥
 
-### 白得的两条属性
-
-1. **后来者读不到加入之前的世代** —— 新成员只会被封装进之后的 epoch，**不依赖任何人配合**
-2. **密钥泄露的影响面被限制在一个 epoch 内** —— 拿到 epoch N+1 的密钥，读不了 epoch N
-
-### 忘记（crypto-shredding）
+可以丢弃某个 epoch 的密钥：
 
 ```bash
-curl -XPOST localhost:8081/api/shred -d '{"epoch":1}'
+curl -XPOST localhost:8081/api/shred \
+  -d '{"epoch":1}'
 ```
 
-密文仍在、哈希链完整、副本仍在——**但没人解得开**。而且这个动作会在链上留下
-**可审计的公告**：任何人都能看到「谁在何时丢弃了哪个世代」，却看不到被保护的内容。
+加密对象及其 Git 历史仍然存在。本机会删除对应密钥，同时在历史中记录这次操作。
 
-> **它做不到什么**：OID、作者、时间戳全都还在（**这不是匿名**）；
-> 只丢本机那一份，别人手里的副本不会消失；对已经看到的人无效；
-> 对闪存不构成物理擦除保证。见 `docs/DESIGN.md` §6.5。
+这提供的是 crypto-shredding（密码学销毁），不是物理删除。
 
-### 相关接口
+## 加密边界
+
+当前实现不提供匿名性，也不会隐藏 Git 元数据。
+
+另外，ImmuLog 节点会在把消息发送给浏览器前解密正文。因此它与传统意义上的“客户端到客户端端到端加密聊天”不是同一种模型：运行节点本身能够读取该节点负责解密的消息。
+
+丢弃密钥也无法删除其他参与者已经解密或保存的副本。
+
+完整的威胁模型和限制见 [DESIGN.md §6.5](docs/DESIGN.md)。
+
+## 工作方式
+
+一个 feed 本质上是一条 Git commit 链：
+
+```
+refs/feeds/<feed>
+
+A
+│
+B
+│
+C
+```
+
+每条消息对应一个 commit，feed ref 指向当前链尾。
+
+由于 ref 本身可以被移动，每个节点还会记录自己最后接受过的 feed tip：
+
+```
+refs/witness/<feed>
+```
+
+witness 是本地状态，不会被 push 或 fetch。
+
+正常更新就是继续向前：
+
+```
+A → B → C → D
+```
+
+如果历史被重写或回滚，就可能出现不再属于 witness 后代的 tip：
+
+```
+A → B → C
+       \
+        X
+```
+
+本地检查随后可以报告这次不一致，而不需要相信远端对于历史的描述。
+
+### 写入路径
+
+```
+浏览器
+   │
+   │ POST
+   ▼
+internal/web
+   │
+   ▼
+core/feed
+   │
+   ├── 构造消息
+   ├── 签名 / 加密
+   ├── 创建 Git commit
+   └── CAS 更新 feed
+   │
+   ▼
+core/gitx
+   │
+   ▼
+git
+```
+
+### 同步路径
+
+```
+remote
+   │
+   ▼
+refs/quarantine/*
+   │
+   ├── 与本地 witness 比较
+   ├── 与其他 remote 比较
+   └── 检查密钥链
+   │
+   ▼
+只允许 fast-forward
+   │
+   ▼
+refs/feeds/*
+```
+
+核心约束如下：
+
+| 规则 | 目的 |
+|------|------|
+| `core/gitx` 是唯一使用 `os/exec` 的包 | 把 Git 子进程处理集中在一个边界 |
+| 网络 ref 先进入 quarantine | 远端输入不会直接写入可信状态 |
+| feed 更新只允许 fast-forward | 历史改写不会静默替换本地历史 |
+| witness ref 只保存在本机 | 远端无法改写检测器 |
+| 撤回使用追加事件 | 撤回消息不会修改过去的历史 |
+| commit metadata 使用 Git trailers | 可读文本和机器可解析元数据共存于同一 object |
+
+## Git 自带的能力
+
+完整的完整性模型主要建立在 Git 本身提供的对象和 ref 操作上。
+
+不需要 worktree 或 index 就可以创建 commit：
+
+```bash
+git commit-tree <tree> -p <parent>
+```
+
+带旧值比较的 ref 更新：
+
+```bash
+git update-ref refs/feeds/alice <new> <old>
+```
+
+检查历史是否仍然是某个已知节点的后代：
+
+```bash
+git merge-base --is-ancestor <witness> <tip>
+```
+
+一次读取所有 feed tip：
+
+```bash
+git for-each-ref \
+  --format='%(refname)%1f%(objectname)' \
+  refs/feeds/
+```
+
+ImmuLog 没有重新实现 Git object storage 或 Git transport，而是把这些操作集中封装在 `core/gitx` 中。
+
+## 配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `IMMULOG_REPO` | `./repoDB` | 本地 bare Git 仓库 |
+| `PORT` | `8081` | HTTP 监听端口 |
+| `IMMULOG_REMOTES` | 未设置 | Git 同步源，支持 `url` 或 `name=url`，多个源用逗号分隔 |
+| `IMMULOG_ANCHOR_URL` | 未设置 | 可选的外部锚定服务 |
+| `IMMULOG_SYNC_INTERVAL` | `5s` | 同步间隔 |
+| `IMMULOG_ANCHOR_INTERVAL` | `60s` | 外部锚定间隔 |
+| `IMMULOG_ENCRYPT` | 未设置 | 设置为 `1` 开启消息体加密 |
+
+未配置的可选安全能力会在启动时明确报告。
+
+例如：
+
+```
+WARN no IMMULOG_REMOTES: single-node mode, no peer sync
+WARN no IMMULOG_ANCHOR_URL: anchors stay local, not truly external
+WARN no user.signingkey: messages are unsigned, identity can be impersonated
+```
+
+## HTTP API
 
 | 方法 | 路径 | 作用 |
-|---|---|---|
-| `POST` | `/api/epoch` | 轮换到新世代（收件人 = 近期见过的公钥 + 自己） |
-| `POST` | `/api/shred` | 丢弃某个世代的密钥，并留下公告 |
+|------|------|------|
+| `GET` | `/` | 内嵌前端 |
+| `GET` | `/api/stream` | SSE 事件流 |
+| `POST` | `/api/commit` | 追加消息或事件 |
+| `POST` | `/api/epoch` | 创建新的加密 epoch |
+| `POST` | `/api/shred` | 丢弃某个 epoch 密钥 |
+| `POST` | `/api/rotate` | 发布签名密钥轮换公告 |
+| `GET` | `/api/snapshot` | 当前节点看到的所有 feed |
+| `GET` | `/api/health` | 存活状态与身份信息 |
 
----
+事件流使用 commit OID 作为 SSE event ID。浏览器重连时会发送 `Last-Event-ID`，从对应位置继续接收事件。
 
-## 许可
+## 项目结构
 
-**Apache License 2.0** —— 见 [LICENSE](LICENSE)，第三方组件声明见 [NOTICE](NOTICE)。
+```
+immulog/
+├── go.mod
+├── main.go
+├── docs/
+│   └── DESIGN.md
+├── core/
+│   ├── gitx/
+│   │   ├── exec.go
+│   │   ├── object.go
+│   │   ├── ref.go
+│   │   └── transport.go
+│   └── feed/
+│       ├── feed.go
+│       ├── key.go
+│       ├── verify.go
+│       ├── snapshot.go
+│       ├── sync.go
+│       ├── anchor.go
+│       ├── crypto.go
+│       ├── epoch.go
+│       └── keyring.go
+├── internal/
+│   └── web/
+│       ├── http.go
+│       ├── sse.go
+│       └── guard.go
+├── web/
+│   ├── index.html
+│   ├── style.css
+│   └── app/
+│       ├── main.js
+│       ├── stream.js
+│       ├── api.js
+│       ├── store.js
+│       ├── render.js
+│       └── mock.js
+└── tools/
+```
 
-整个仓库（`core/` 库 + 服务端 + 前端）统一使用 Apache-2.0。
+`core/` 刻意放在 Go 的 `internal/` 之外，这样外部程序可以直接导入它。
 
-`core/` 刻意不在 `internal/` 下 —— Go 禁止导入 `internal/`。
-一个可复用的库应该真的能被 `go get`，而不是只在文档里叫「核心」。
+前端中，`stream.js` 是唯一访问 `EventSource` 的文件，`api.js` 是唯一调用 `fetch` 的文件，`render.js` 是唯一直接操作 DOM 的文件。
 
-> **一个明确接受的代价**：Apache-2.0 **不要求回馈改进**。
-> 有人可以拿走这份代码、改进它、闭源、甚至当服务对外提供，且无需回馈一行。
-> 这是选择宽松许可时**主动接受的**，不是疏忽。
->
-> 对这个项目尤其无所谓：协议本身是开放的（git 远端 + 几个 HTTP 接口），
-> 任何人照着协议重写一份都不需要碰这份代码。**开放协议是挡不住的，也不该挡。**
+后端中，`gitx` 是唯一允许调用 `os/exec` 的包。
 
-贡献走 **DCO**（不是 CLA）：你保留版权，项目也无法重新授权。见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+这些边界的完整说明见 [DESIGN.md](docs/DESIGN.md)。
 
----
+## 前端
 
-## 验证
+前端使用原生 HTML、CSS 和 JavaScript ES modules，没有运行时框架，也没有浏览器端构建步骤。
+
+第三方前端资源已经 vendored 到 `web/vendor/`，并嵌入最终二进制。CI 会检查 `web/` 中的页面、CSS 和 JavaScript 是否仍引用外部 URL。
+
+开发与 CI 检查使用：
+
+- `jsdom`：DOM 和样式完整性检查
+- Playwright：真实浏览器检查
+- axe-core：可访问性检查
+
+这些都是开发工具，不属于运行时依赖。
+
+## 测试
+
+Go：
 
 ```bash
-# Go：44 个用例（含竞态检测）
-go vet ./... && go test -race ./...
-
-# 前端逻辑 + 浏览器 + 端到端
-cd tools && npm install && npm run smoke && npm run visual
+go vet ./...
+go test ./...
 ```
 
-CI 分三个 job（`go` / `smoke` / `browser`），全部跑在 x86_64 runner 上，
-截图与实测数据作为 artifact 回传。见 `.github/workflows/ci.yml`。
+前端和浏览器：
 
-> 开发机若为 aarch64，`-race` 在 proot 沙箱里会因 VMA 受限失败 —— 那是环境限制，
-> 竞态检测交给 CI。
+```bash
+cd tools
+npm install
 
-### 已知的本机环境限制（不影响产品）
-
-本机的 proot 沙箱里 **`receive-pack`（push 的服务端）必定失败**，任何消费方都如此：
-
-```
-$ git init --bare h.git && git push h.git HEAD:refs/x
-error: unpack should have generated <sha>, but I can't find it!
- ! [remote rejected] HEAD -> refs/x (bad pack)
+npm run smoke
+npm run visual
 ```
 
-**已排除的可能**（都实测过）：
+CI 分为三个 job：
 
-| 假设 | 实测结果 |
-|---|---|
-| 文件系统写不了 packfile | ✗ `git repack` / `git bundle` / `git clone --no-local` 全部正常 |
-| upload-pack 也有问题 | ✗ fetch / clone 完全正常 |
-| 是本地路径传输的锅 | ✗ `file://`、`file://localhost/` 同样失败 |
-| 可以靠参数绕过 | ✗ `--no-thin` / `unpackLimit=1` / `fsync=none` / `threads=1` 全部失败 |
+- Go 构建、格式检查、vet、DCO、依赖检查和 race 检测
+- jsdom smoke test
+- Chromium 布局、恢复能力、SSE、可访问性、联邦同步和端到端检查
 
-`GIT_TRACE` 显示失败发生在 receive-pack 的 **quarantine 迁移**：`unpack-objects`
-以 `GIT_OBJECT_DIRECTORY=.../tmp_objdir-incoming-XXXX` 写入对象，之后的存在性检查
-却找不到它。这是 proot + 该内核组合的问题，**与 ImmuLog 无关** —— 上面那段
-复现里没有任何 ImmuLog 代码。
+截图与测量结果会作为 CI artifact 保存。
 
-**影响范围**：仅限本机开发。CI 跑在 GitHub 的原生 x86_64 runner 上，push 正常执行。
-`internal/gitx` 的 push 测试在本机会以精确条件跳过（只认 "bad pack" 这一个症状），
-其余测试与端到端用 **fetch 播种中转仓库** 绕过 —— 这不改变被测代码路径，
-因为同步逻辑只读。
+## 开发环境限制
 
----
+项目当前的 aarch64/proot 开发环境存在内核与 VMA 限制，会影响 `go test -race` 以及 Git 本地 `receive-pack`。
 
-## ⚠️ 发布前必做
+CI 使用原生 x86_64 的 GitHub Actions runner 执行这些检查。
 
-1. **vendor Beer CSS**：CDN 是供应链漏洞。需连同 35 个 shape SVG 与图标字体一起 `embed`（约 1 MB），
-   并把 `index.html` 里的外链换成 `/assets/`。
-2. **配置签名密钥**：否则 `author` 字段只是装饰品。
+具体复现过程和影响范围见 [DESIGN.md](docs/DESIGN.md)。
 
----
+## 文档
 
-## 路线图
+[设计文档](docs/DESIGN.md) 包含完整的威胁模型、数据模型、同步协议、加密设计、前端架构、测试策略、已经发现的漏洞以及已知限制。
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| 0–4 | `gitx` + feed + SSE + 见证锚 + 告警 + 签名轮换 + 多源同步 + 快照 + 锚定链 | ✅ |
-| 5 | 端到端加密 + crypto-shredding（可遗忘） | ✅ |
+[贡献指南](CONTRIBUTING.md) 包含开发约束和 DCO 要求。
 
-## License
+## 贡献
 
-待定。
+项目使用 Developer Certificate of Origin (DCO)，不使用 CLA。
+
+每个 commit 都必须包含 `Signed-off-by:`：
+
+```bash
+git commit -s
+```
+
+CI 会检查整个分支历史中的 commit 是否都满足这一要求。
+
+提交 Pull Request 前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可证
+
+Apache License 2.0。
+
+完整许可证文本和第三方组件声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
