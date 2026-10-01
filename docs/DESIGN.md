@@ -781,7 +781,7 @@ just deleting `?demo=1` — **that is the dividend of the "four only" discipline
 **Hash information is collapsed by default**: tapping `.meta` expands `.detail`
 to reveal the full OID and signature — §8.1's principle, applied.
 
-### 8.8 ⚠️ The CDN supply-chain problem
+### 8.8 The CDN supply-chain problem — solved by vendoring
 
 **A tamper-evidence product pulling CSS from a third-party CDN at runtime is a
 supply-chain hole.**
@@ -790,27 +790,42 @@ This is not pedantry: the whole argument of the project is "do not trust third
 parties", and `cdn.jsdelivr.net` is a third party that can change your interface
 at any moment.
 
+**This is now closed.** `tools/vendor.sh` pulls every asset into `web/vendor/`,
+rewrites the absolute URLs to local siblings, and the whole directory goes into
+the binary through `//go:embed`. CI fails if any file under `web/` references an
+external URL again.
+
 | Stage | Approach |
 |---|---|
-| Development | CDN (the current implementation) |
-| **Release** | **vendor into `embed`**; Beer CSS documents a ready-made "LOCAL CDN VERSION" |
+| Fetching | `tools/vendor.sh` (pinned versions, re-runnable) |
+| Runtime | **local only** — no request leaves the machine |
+| Guard | a CI step greps `web/` for `http(s)://` and fails on a hit |
 
-What vendoring costs (measured):
+What is vendored, and what it costs:
 
-| File | Size |
+| Item | Size |
 |---|---|
-| `beer.min.css` | ~88 KB |
-| `beer.min.js` | ~19 KB |
-| `material-dynamic-colors.min.js` | — |
-| **35 shape SVGs** (`gem.svg`, `burst.svg`, ...) | ~40 KB |
-| **3 icon font woff2 files** | the bulk |
+| `beer.min.css` | 88 KB |
+| `beer.min.js` + `material-dynamic-colors.min.js` | 71 KB |
+| 38 shape SVGs (`gem.svg`, `burst.svg`, ...) | ~40 KB |
+| 4 Material Symbols icon fonts (woff2) | ~1.6 MB |
+| 26 web font files (woff2) | ~2.1 MB |
+| **Total** | **~3.8 MB, 72 files** |
 
-About 1 MB in total — acceptable for one binary. Two caveats:
+The binary went from 9.7 MB to 13.6 MB. That is the price of not trusting anyone
+at runtime, and it is worth paying.
+
+Two caveats that survive vendoring:
 
 1. **The shape SVGs are external files** (`mask-image: url(gem.svg)`), so
-   vendoring the CSS alone breaks every shape.
+   vendoring the CSS alone would break every shape. The script fetches them all,
+   and `check/shapes.mjs` verifies each one resolves.
 2. Beer CSS does not emit `-webkit-mask` prefixes, so **shapes may not render on
    old Safari** (modern versions support the unprefixed property).
+
+Licence texts travel with the assets: `web/vendor/beer/LICENSE` (MIT) and
+`web/vendor/fonts/LICENSE` plus `NOTICE` (SIL OFL 1.1, with per-family copyright
+notices).
 
 ### 8.9 Two Beer CSS traps worth remembering
 

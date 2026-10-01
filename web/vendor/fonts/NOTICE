@@ -1,0 +1,24 @@
+Fonts vendored into this directory
+==================================
+
+All three families are licensed under the SIL Open Font License, Version 1.1.
+The full licence text is in LICENSE.
+
+  Bricolage Grotesque
+    Copyright 2022 The Bricolage Grotesque Project Authors
+    https://github.com/atelier-anchor/bricolage
+
+  Martian Mono
+    Copyright 2022 The Martian Mono Project Authors
+    https://github.com/evilmartians/mono
+
+  Roboto Flex
+    Copyright 2017 The Roboto Flex Project Authors
+    https://github.com/googlefonts/roboto-flex
+
+The files were fetched from fonts.gstatic.com by tools/vendor.sh and renamed to
+fNN.woff2. Google's own basenames run to more than 200 characters for variable
+fonts, which is hostile to tooling and to a repository.
+
+The CSS in fonts.css is Google's, with every absolute URL rewritten to a local
+sibling file. No request leaves this machine at runtime.

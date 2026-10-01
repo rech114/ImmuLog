@@ -19,7 +19,7 @@ const script = (send) => [
     peers: [
       { name: 'origin', url: 'git@node-a', ok: true },
       { name: 'mirror', url: 'git@node-b', ok: true },
-      { name: "alice's machine", url: 'http://10.0.0.7:8081', ok: false, note: 'inconsistent with the local witness anchor' },
+      { name: "alice's machine", url: 'git@10.0.0.7:immulog.git', ok: false, note: 'inconsistent with the local witness anchor' },
     ] }],
 
   [300, { type: 'msg', oid: GENESIS, seq: 1, author: 'alice', body: 'Up. This one is the genesis commit.' }],

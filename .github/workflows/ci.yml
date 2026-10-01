@@ -30,10 +30,24 @@ jobs:
       - run: go vet ./...
       - name: Formatting
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: The frontend must make no external requests (supply chain)
+        run: |
+          # A tamper-evidence product must not fetch its assets from a third party
+          # at runtime. XML namespace URIs are not requests, so they are allowed.
+          hits=$(grep -rnoE 'https?://[^"'"'"')[:space:]]*' web/ \
+                 --include='*.html' --include='*.css' --include='*.js' \
+                 | grep -vE 'w3\.org|schema\.org' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::web/ still references an external URL:"
+            echo "$hits"
+            echo "Run tools/vendor.sh and point at web/vendor/ instead."
+            exit 1
+          fi
+          echo "web/ makes no external requests"
       - name: Every source file must carry an SPDX header
         run: |
           missing=""
-          for f in $(find . -name '*.go' -o -name '*.js' -o -name '*.mjs' | grep -v '/\.git/' | grep -v node_modules | sort); do
+          for f in $(find . -name '*.go' -o -name '*.js' -o -name '*.mjs' | grep -v '/\.git/' | grep -v node_modules | grep -v '/web/vendor/' | sort); do
             head -1 "$f" | grep -q 'SPDX-License-Identifier: Apache-2.0' || missing="$missing $f"
           done
           if [ -n "$missing" ]; then

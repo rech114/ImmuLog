@@ -1,22 +1,50 @@
 ImmuLog
 Copyright (c) 2026 ImmuLog contributors
-https://github.com/Maicy0609/ImmuLog
+https://github.com/rech114/ImmuLog
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 
-Third-party components
-----------------------
+Runtime dependencies of this work
+---------------------------------
 
-**Runtime dependencies of this work: none.**
-The Go module has no third-party imports (`go.sum` does not exist).
+**None.**
+The Go module has no third-party imports (`go.sum` does not exist), and the
+frontend makes no external requests: everything it needs is embedded in the
+binary. See "Vendored frontend assets" below.
 
-**git** — this program invokes the `git` binary as a *separate process*
-(`os/exec`), it does not link or embed any Git code. Git is GPL-2.0; running a
-GPL program as a subprocess does not make this work a derivative of it. Git is
-not distributed with this work.
 
-**Beer CSS** (MIT) and the web fonts (SIL Open Font License 1.1) are currently
-loaded from a CDN at runtime, so they are not part of this distribution.
-Before any release that vendors them into `web/`, their license texts must be
-carried along — see docs/DESIGN.md §8.8.
+git
+---
+
+This program invokes the `git` binary as a *separate process* (`os/exec`). It
+does not link or embed any Git code. Git is GPL-2.0; running a GPL program as a
+subprocess does not make this work a derivative of it. Git is not distributed
+with this work.
+
+
+Vendored frontend assets
+------------------------
+
+These are copied into `web/vendor/` by `tools/vendor.sh` and embedded into the
+binary. **Nothing is fetched from a network at runtime** — a tamper-evidence
+product that pulls its stylesheet from a third-party CDN has a supply-chain hole,
+and the whole argument of this project is "do not trust third parties".
+
+| Component | Version | Licence | Licence text |
+|---|---|---|---|
+| Beer CSS | 5.0.3 | MIT | `web/vendor/beer/LICENSE` |
+| material-dynamic-colors | 1.1.4 | MIT | `web/vendor/beer/LICENSE` |
+| Bricolage Grotesque | v9 | SIL OFL 1.1 | `web/vendor/fonts/LICENSE` |
+| Martian Mono | v6 | SIL OFL 1.1 | `web/vendor/fonts/LICENSE` |
+| Roboto Flex | v30 | SIL OFL 1.1 | `web/vendor/fonts/LICENSE` |
+
+Per-font copyright notices are in `web/vendor/fonts/NOTICE`.
+
+To refresh them, run `tools/vendor.sh` and commit the result — the repository is
+the source of truth, not the CDN. CI fails if any file under `web/` references an
+external URL.
+
+Note on the icon fonts: Beer CSS ships Material Symbols subsets. Their upstream
+terms are Google's; they are redistributed here under the same MIT-licensed
+package the Beer CSS distribution carries.
