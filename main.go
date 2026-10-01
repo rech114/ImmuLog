@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -61,7 +62,20 @@ func run() error {
 		return err
 	}
 	key, _ := repo.SigningKey(ctx)
-	pub := feed.FeedID(name + "\x00" + email + "\x00" + key)
+
+	// feed 标识只由「是谁」决定，**不含密钥** —— 否则换密钥就等于换一条 feed，
+	// 密钥轮换公告也就无从衔接（见 DESIGN.md §4.3）。
+	pub := feed.FeedID(name + "\x00" + email)
+
+	// 配了密钥就必须真的能签：签名不可用时拒绝启动，绝不静默降级成明文
+	fingerprint := ""
+	if key != "" {
+		fingerprint, err = feed.ProbeSigning(ctx, repo)
+		if err != nil {
+			return fmt.Errorf("user.signingkey 已配置但无法签名：%w\n"+
+				"  修好它，或清空该配置以明确地以「不签名」身份运行", err)
+		}
+	}
 
 	store, err := feed.New(ctx, repo, pub)
 	if err != nil {
@@ -112,7 +126,9 @@ func run() error {
 	log.Info("Immutalk 就绪",
 		"addr", s.Addr, "repo", dir, "feed", pub,
 		"signed", store.Signed(), "remotes", len(remotes), "anchor", publisher != nil)
-	if key == "" {
+	if store.Signed() {
+		log.Info("消息将使用密钥签名", "fingerprint", feed.ShortKey(fingerprint))
+	} else {
 		log.Warn("未配置 user.signingkey：消息不会被签名，身份可被冒名（见 DESIGN.md §4）")
 	}
 	if len(remotes) == 0 {

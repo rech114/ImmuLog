@@ -439,6 +439,20 @@ func TestHealth(t *testing.T) {
 
 // ── 静态资源（同源，零 CORS）─────────────────────────────────────
 
+// 未配置签名密钥时，轮换必须被拒 —— 换身份的前提是本来就有可验证的身份。
+func TestRotateRequiresSigningKey(t *testing.T) {
+	srv, _, _ := newServer(t)
+	body, _ := json.Marshal(map[string]string{"key": "SHA256:whatever"})
+	resp, err := http.Post(srv.URL+"/api/rotate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("状态码 = %d，期望 409", resp.StatusCode)
+	}
+}
+
 func TestServesEmbeddedAssets(t *testing.T) {
 	srv, _, _ := newServer(t)
 	for _, path := range []string{"/", "/index.html", "/app/main.js"} {

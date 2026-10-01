@@ -40,12 +40,42 @@ go build -o immutalk .
 ```bash
 git config --global user.name "你的名字"
 git config --global user.email "you@example.com"
-# 可选但强烈建议：签名（见 DESIGN.md §4）
-git config --global gpg.format ssh
-git config --global user.signingkey ~/.ssh/id_ed25519.pub
 ```
 
-没有配置 `user.signingkey` 时，服务会在启动日志里**明确警告身份可被冒名**——它不假装安全。
+### 签名（强烈建议）
+
+没有签名时，`author` 字段只是装饰品——任何能推送的人都能冒名。开启方式：
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+# 让 git 能判定"这个签名有效、属于谁"（否则状态只是"密钥未知"）
+printf '%s %s\n' "you@example.com" "$(cat ~/.ssh/id_ed25519.pub)" > ~/.config/immutalk/allowed_signers
+git config --global gpg.ssh.allowedSignersFile ~/.config/immutalk/allowed_signers
+```
+
+**配了密钥但签不出来时，服务会拒绝启动**，而不是悄悄发出没有签名的消息：
+
+```
+启动失败 err=user.signingkey 已配置但无法签名：签名密钥不可用: ...
+  修好它，或清空该配置以明确地以「不签名」身份运行
+```
+
+未配置密钥时，启动日志与「完整性」页都会**明说"身份可被冒名"**——它不假装安全。
+
+**换密钥**（顺序不能反）：
+
+```bash
+ssh-keygen -t ed25519 -C you@example.com -f ~/.ssh/new_key
+ssh-keygen -lf ~/.ssh/new_key.pub        # 拿到指纹，形如 SHA256:...
+# 1) 先发轮换公告（用当前这把旧密钥签名）
+curl -XPOST localhost:8081/api/rotate -d '{"key":"SHA256:..."}'
+# 2) 再把配置指过去
+git config --global user.signingkey ~/.ssh/new_key.pub
+```
+
+轮换公告由**旧密钥**签名并声明新密钥；链条因此连续可审计。
+任何**没有公告背书**的密钥变更都会被同步方判为攻击并保留告警。
 
 ### 环境变量
 
@@ -202,7 +232,7 @@ error: unpack should have generated <sha>, but I can't find it!
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 0–3 | `gitx` + feed + SSE + 见证锚 + 告警 | ✅ |
+| 0–3 | `gitx` + feed + SSE + 见证锚 + 告警 + **签名与轮换** | ✅ |
 | 4 | 多源同步 + 快照 + 锚定链 + 分裂视图检测 | ✅ |
 | 5 | epoch 密钥加密（可遗忘） | ⬜ |
 

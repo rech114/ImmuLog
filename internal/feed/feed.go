@@ -27,6 +27,7 @@ type Kind string
 const (
 	KindMsg     Kind = "msg"
 	KindRetract Kind = "retract"
+	KindRotate  Kind = "rotate" // 密钥轮换公告
 )
 
 // trailer 键名。改这里等于改协议。
@@ -35,6 +36,7 @@ const (
 	trailerSeq      = "Immutalk-Seq"
 	trailerRetracts = "Immutalk-Retracts"
 	trailerReason   = "Immutalk-Reason"
+	trailerKey      = "Immutalk-Key"
 )
 
 // MaxBody 是单条消息正文的上限。
@@ -66,6 +68,7 @@ type Message struct {
 	Feed     string    `json:"feed,omitempty"`
 	Body     string    `json:"body"`
 	Sig      string    `json:"sig,omitempty"`
+	Key      string    `json:"key,omitempty"` // 签名密钥指纹（短）
 	Kind     Kind      `json:"kind"`
 	Retracts string    `json:"retracts,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
@@ -301,9 +304,12 @@ func Decode(raw []gitx.RawCommit, feedRef string) []Message {
 	out := make([]Message, 0, len(raw))
 	for _, r := range raw {
 		seq, _ := strconv.Atoi(r.Seq)
-		kind := KindMsg
-		if r.Retracts != "" {
-			kind = KindRetract
+		kind := Kind(r.Kind)
+		if kind == "" {
+			kind = KindMsg
+			if r.Retracts != "" {
+				kind = KindRetract
+			}
 		}
 		out = append(out, Message{
 			OID:      r.OID,
@@ -312,6 +318,7 @@ func Decode(raw []gitx.RawCommit, feedRef string) []Message {
 			Feed:     feedRef,
 			Body:     bodyOf(r.Body),
 			Sig:      sigLabel(r.Sig),
+			Key:      ShortKey(r.Key),
 			Kind:     kind,
 			Retracts: r.Retracts,
 			Reason:   r.Reason,
@@ -333,6 +340,14 @@ func sigLabel(status string) string {
 	default:
 		return ""
 	}
+}
+
+// ShortKey 只取指纹尾部，够人眼区分即可。
+func ShortKey(k string) string {
+	if len(k) > 16 {
+		return k[len(k)-16:]
+	}
+	return k
 }
 
 // bodyOf 剥掉 commit message 末尾的 trailer 块，返回纯净正文。

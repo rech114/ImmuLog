@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/stream", s.handleStream)
 	mux.HandleFunc("POST /api/commit", s.handleCommit)
+	mux.HandleFunc("POST /api/rotate", s.handleRotate)
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.Handle("GET /", http.FileServerFS(s.files)) // 同源：零 CORS 配置
@@ -126,7 +127,6 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 }
 
 // commitStatus 把领域错误映射成 HTTP 状态码。err 为 nil 时返回 0。
-//
 // 单独提出来是为了把一条安全契约钉死：
 // **CAS 失败（有人抢先或历史被改写）必须原样上报，绝不能像原型那样只 log 一行。**
 func commitStatus(err error) (int, string) {
@@ -153,6 +153,41 @@ func commitStatus(err error) (int, string) {
 func errorCode(err error) string {
 	_, code := commitStatus(err)
 	return code
+}
+
+// ── 密钥轮换 ──────────────────────────────────────────────────────
+
+type rotateReq struct {
+	Key string `json:"key"`
+}
+
+// handleRotate 追加一条密钥轮换公告。
+//
+// **由当前（旧）密钥签名，声明新密钥** —— 所以顺序是「先调这个，再改配置」。
+// 详见 feed.Store.DeclareKey 的文档。
+func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 512)
+
+	var req rotateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad_json"})
+		return
+	}
+
+	msg, err := s.store.DeclareKey(r.Context(), req.Key)
+	switch {
+	case err == nil:
+		s.kick()
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"oid": msg.OID, "seq": msg.Seq, "kind": "rotate",
+		})
+	case errors.Is(err, feed.ErrNoSigningKey):
+		// 没在签名的 feed 上谈轮换毫无意义 —— 拒绝，而不是悄悄换掉身份
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "signing_required"})
+	default:
+		s.log.Warn("轮换失败", "err", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "rotate_failed"})
+	}
 }
 
 // kick 请求一次后台推送；已有待处理的请求就合并掉（聚合推送，见 §10 纪律 6）。
@@ -282,9 +317,15 @@ func (s *Server) replay(ctx context.Context, sess *Session, since string, limit 
 
 // ── 观测 ──────────────────────────────────────────────────────────
 
+type identityPayload struct {
+	Signed bool   `json:"signed"`
+	Key    string `json:"key,omitempty"`
+}
+
 type helloPayload struct {
 	Head       string          `json:"head,omitempty"`
 	Signed     bool            `json:"signed"`
+	Identity   identityPayload `json:"identity"`
 	Snapshot   string          `json:"snapshot,omitempty"`
 	AnchoredAt string          `json:"anchoredAt,omitempty"`
 	External   bool            `json:"external"`
@@ -300,6 +341,12 @@ func (s *Server) hello(ctx context.Context) helloPayload {
 		Signed:   s.store.Signed(),
 		Snapshot: snap.Digest,
 		Peers:    peers,
+		Identity: identityPayload{Signed: s.store.Signed()},
+	}
+	if p.Identity.Signed {
+		if k, err := s.store.CurrentKey(ctx); err == nil {
+			p.Identity.Key = feed.ShortKey(k)
+		}
 	}
 	if anchor.OID != "" {
 		p.AnchoredAt = anchor.At.Local().Format("2006-01-02 15:04")
@@ -322,18 +369,25 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	verdict, _ := s.store.Verify(r.Context())
+	identity := identityPayload{Signed: s.store.Signed()}
+	if identity.Signed {
+		if k, err := s.store.CurrentKey(r.Context()); err == nil {
+			identity.Key = feed.ShortKey(k)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"digest":  snap.Digest,
-		"refs":    snap.Refs,
-		"at":      snap.At,
-		"anchor":  anchor,
-		"peers":   peers,
-		"witness": verdict.Witness,
-		"tip":     verdict.Current,
-		"ok":      verdict.OK,
-		"reason":  verdict.Reason,
-		"feed":    s.store.FeedRef(),
-		"remotes": s.remotes,
+		"digest":   snap.Digest,
+		"refs":     snap.Refs,
+		"at":       snap.At,
+		"anchor":   anchor,
+		"peers":    peers,
+		"identity": identity,
+		"witness":  verdict.Witness,
+		"tip":      verdict.Current,
+		"ok":       verdict.OK,
+		"reason":   verdict.Reason,
+		"feed":     s.store.FeedRef(),
+		"remotes":  s.remotes,
 	})
 }
 
@@ -358,8 +412,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 //
 // 事件里带上 feed：客户端据此保证「撤回只对同一条 feed 内的消息生效」，
 // 于是撤回是作者的权利，而不是谁都能对别人做的事。
+//
+// 密钥轮换公告是**结构性事件**，不进时间线（它的作用体现在身份区块与
+// 链条校验上），所以返回 false。
 func feedEventOf(m feed.Message) (Event, bool) {
-	if m.Kind == feed.KindRetract {
+	switch m.Kind {
+	case feed.KindRotate:
+		return Event{}, false
+	case feed.KindRetract:
 		if m.Retracts == "" {
 			return Event{}, false
 		}
@@ -369,8 +429,9 @@ func feedEventOf(m feed.Message) (Event, bool) {
 			"retracts": m.Retracts,
 			"reason":   m.Reason,
 		}}, true
+	default:
+		return Event{ID: m.OID, Type: "msg", Data: m}, true
 	}
-	return Event{ID: m.OID, Type: "msg", Data: m}, true
 }
 
 func feedEvent(m feed.Message) Event {

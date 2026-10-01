@@ -36,11 +36,12 @@ type SyncResult struct {
 // remotes 的 Name 必须两两不同 —— 它决定隔离区槽位，重名会互相覆盖。
 // （main.go 的 parseRemotes 已经去重；直接调用的调用方需自己保证。）
 //
-// 三层纪律（docs/DESIGN.md §8.10 / §6.3）：
+// 四层纪律（docs/DESIGN.md §8.10 / §6.3 / §4.3）：
 //
 //  1. **网络输入先进隔离区** refs/quarantine/<槽位>/ —— 绝不直接写可信状态
 //  2. **每条 feed 都拿本机见证锚比** —— 外来历史同样不许被静默改写
 //  3. **只允许快进** —— 非快进一律不动本地，并留下告警
+//  4. **密钥链条必须连续** —— 换密钥只能经由旧密钥签名的轮换公告
 //
 // 远端之间互相矛盾（两个源对同一条 feed 给出无共同后代的两个链尾）判为分裂视图。
 func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (SyncResult, error) {
@@ -156,15 +157,29 @@ func Sync(ctx context.Context, repo *gitx.Repo, remotes []Remote, maxNew int) (S
 				continue
 			}
 		}
+
+		// 密钥链条：换密钥必须经由旧密钥签名的轮换公告。
+		// 注意这里用 best（OID）而不是 ref —— ref 此刻还指向 local，区间会是空的。
+		raw, err := repo.LogRange(ctx, best, local, maxNew)
+		if err != nil {
+			continue
+		}
+		prev, err := KeyAt(ctx, repo, local)
+		if err != nil {
+			continue
+		}
+		if kv, err := CheckKeyChain(prev, raw); err == nil && !kv.OK {
+			kv.Feed = ref
+			kv.Peer = claims[ref][0].peer
+			res.Alarms = append(res.Alarms, kv)
+			bad[kv.Peer] = "密钥链条断裂"
+			continue // 拒绝推进
+		}
+
 		if err := repo.UpdateRef(ctx, ref, best, local); err != nil {
 			continue
 		}
 		if err := AdvanceWitness(ctx, repo, ref, best); err != nil {
-			continue
-		}
-
-		raw, err := repo.LogRange(ctx, ref, local, maxNew)
-		if err != nil {
 			continue
 		}
 		res.Advanced = append(res.Advanced, Decode(raw, ref)...)

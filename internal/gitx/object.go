@@ -12,23 +12,29 @@ import (
 //
 // 用 `git log -z`（记录之间是 NUL）+ 字段之间 \x1f，并且把 %B 放在**最后**：
 // 于是正文里出现 \x1e / 任意控制字符都不会把记录切错。
+//
 // %G? 是 git 自己的签名状态：N=未签名 G=有效 U=密钥未知 B=签名损坏。
-const logFormat = "%H%x1f%an%x1f%at%x1f%G?%x1f" +
+// %GK 是签名者的密钥指纹 —— 密钥链条就是靠它逐条串起来的。
+const logFormat = "%H%x1f%an%x1f%at%x1f%G?%x1f%GK%x1f" +
 	"%(trailers:key=Immutalk-Seq,valueonly)%x1f" +
 	"%(trailers:key=Immutalk-Retracts,valueonly)%x1f" +
 	"%(trailers:key=Immutalk-Reason,valueonly)%x1f" +
 	"%B"
 
 // RawCommit 是 log 解析出的一条原始提交。
-// Trailer 三项与签名状态由 git 自己解析（不重造轮子）；Body 是完整原始正文。
+// Trailer 由 git 自己解析（不重造轮子）；Kind / Declared 从正文尾部的
+// trailer 段落里取，与 git 的 trailer 语法同一套规则。
 type RawCommit struct {
 	OID      string
 	Author   string
 	At       time.Time
 	Sig      string // "" | "good" | "untrusted" | "bad"
+	Key      string // 签名密钥指纹；未签名时为空
 	Seq      string
 	Retracts string
 	Reason   string
+	Kind     string // `Immutalk-Kind` trailer
+	Declared string // `Immutalk-Key` trailer（只有轮换公告才有）
 	Body     string
 }
 
@@ -69,6 +75,25 @@ func (r *Repo) Commit(ctx context.Context, tree, parent, message string, sign bo
 	if sign {
 		args = append(args, "-S")
 	}
+	return r.commitTree(ctx, args, message)
+}
+
+// CommitAs 用**指定密钥**签名一个 commit。
+//
+// 密钥轮换公告必须由旧密钥签名，而用户此时已经把 user.signingkey 指向新密钥，
+// 所以只能显式指定。`-S<keyid>` 是 git 自带的写法。
+func (r *Repo) CommitAs(ctx context.Context, tree, parent, message, key string) (string, error) {
+	args := []string{"commit-tree", tree}
+	if parent != "" {
+		args = append(args, "-p", parent)
+	}
+	if key != "" {
+		args = append(args, "-S"+key)
+	}
+	return r.commitTree(ctx, args, message)
+}
+
+func (r *Repo) commitTree(ctx context.Context, args []string, message string) (string, error) {
 	out, err := r.run(ctx, []byte(message), args...)
 	if err != nil {
 		return "", err
@@ -122,20 +147,23 @@ func parseLog(raw string) []RawCommit {
 		if rec == "" {
 			continue
 		}
-		// 只切前 7 个分隔符，正文（第 8 项）原样保留，哪怕它含 \x1f
-		f := strings.SplitN(rec, "\x1f", 8)
-		if len(f) != 8 {
+		// 只切前 8 个分隔符，正文（第 9 项）原样保留，哪怕它含 \x1f
+		f := strings.SplitN(rec, "\x1f", 9)
+		if len(f) != 9 {
 			continue
 		}
 		c := RawCommit{
 			OID:      strings.TrimSpace(f[0]),
 			Author:   strings.TrimSpace(f[1]),
 			Sig:      sigStatus(strings.TrimSpace(f[3])),
-			Seq:      strings.TrimSpace(f[4]),
-			Retracts: strings.TrimSpace(f[5]),
-			Reason:   strings.TrimSpace(f[6]),
-			Body:     f[7],
+			Key:      strings.TrimSpace(f[4]),
+			Seq:      strings.TrimSpace(f[5]),
+			Retracts: strings.TrimSpace(f[6]),
+			Reason:   strings.TrimSpace(f[7]),
+			Body:     f[8],
 		}
+		c.Declared = trailerIn(f[8], "Immutalk-Key")
+		c.Kind = trailerIn(f[8], "Immutalk-Kind")
 		if secs, err := strconv.ParseInt(strings.TrimSpace(f[2]), 10, 64); err == nil {
 			c.At = time.Unix(secs, 0).UTC()
 		}
@@ -144,6 +172,23 @@ func parseLog(raw string) []RawCommit {
 		}
 	}
 	return commits
+}
+
+// trailerIn 在正文的最后一个段落里找 key 的值。找不到返回空串。
+// 用的是 git 自己的 trailer 规则：trailer 必须落在最后一段。
+func trailerIn(body, key string) string {
+	s := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
+	i := strings.LastIndex(s, "\n\n")
+	if i < 0 {
+		return ""
+	}
+	for _, line := range strings.Split(s[i+2:], "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if ok && strings.TrimSpace(k) == key {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // LogRange 只读 since 之后（不含）到 ref 之间的提交，从旧到新。

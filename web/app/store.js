@@ -5,7 +5,7 @@ const byOid = new Map(); // oid -> item
 const items = [];        // 有序：msg 与 alarm 混排，就是时间线
 const listeners = new Set();
 
-let cursors = { anchor: '', snapshot: '', anchoredAt: '' };
+let cursors = { anchor: '', snapshot: '', anchoredAt: '', identity: null };
 let peers = [];
 
 const emit = (kind, payload) => {
@@ -70,6 +70,7 @@ function apply(evt) {
       cursors.anchor = evt.head || cursors.anchor;
       cursors.snapshot = evt.snapshot || cursors.snapshot;
       cursors.anchoredAt = evt.anchoredAt || cursors.anchoredAt;
+      cursors.identity = evt.identity || cursors.identity;
       peers = evt.peers || peers;
       emit('meta', stats());
       return null;
@@ -112,6 +113,7 @@ export const stats = () => ({
   snapshot: short(cursors.snapshot),
   anchor: short(cursors.anchor),
   anchoredAt: cursors.anchoredAt,
+  identity: cursors.identity,
   alarms: items.filter((i) => i.kind === 'alarm'),
   peers,
 });

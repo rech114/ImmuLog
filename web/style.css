@@ -185,6 +185,10 @@ h6>i,
   flex: none;
 }
 
+.chip.error {
+  color: var(--error);
+}
+
 .kv .mono {
   flex: none;
 }

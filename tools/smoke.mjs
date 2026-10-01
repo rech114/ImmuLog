@@ -207,12 +207,21 @@ headline('场景 B · 无 demo：EventSource 帧 + fetch 失败路径');
 
   FakeES.last.emit('hello', {
     head: OID, snapshot: 'abcdef1234567890', anchoredAt: '2026-10-01 12:00',
+    identity: { signed: true, key: 'SHA256:abcdefghijklmnop' },
     peers: [{ name: 'hub', url: 'git@node-b', ok: true }],
   }, '');
   await flush();
   ok(one('#anchored-at').textContent.includes('12:00'), 'hello 帧更新外部锚定时间');
   ok(one('#snapshot').textContent.startsWith('abcdef'), 'hello 帧更新快照摘要');
+  ok(one('#identity-chip').textContent === '已签名', 'hello 帧更新签名状态');
+  ok(one('#identity-line').textContent.includes('SHA256'), 'hello 帧更新密钥指纹');
   ok(one('#peers .kv') !== null, 'hello 帧渲染对端列表');
+
+  // 未签名时必须明说"可被冒名"，不粉饰
+  FakeES.last.emit('hello', { head: OID, identity: { signed: false } }, '');
+  await flush();
+  ok(one('#identity-chip').textContent === '未签名', '未签名时如实标注');
+  ok(one('#identity-line').textContent.includes('可被冒名'), '未签名时给出风险提示');
 
   // 发送：服务端返回 cas_failed
   one('#input').value = '这条会被拒';

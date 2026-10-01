@@ -31,6 +31,8 @@ const refs = {
   anchorLine: $('#anchor-line'),
   snapshot: $('#snapshot'),
   anchoredAt: $('#anchored-at'),
+  identityLine: $('#identity-line'),
+  identityChip: $('#identity-chip'),
 };
 
 const shapeClass = (state) =>
@@ -180,32 +182,40 @@ export function meta(s) {
   refs.anchoredAt.textContent = s.anchoredAt || '尚未锚定';
   refs.anchorLine.textContent = s.anchor ? `最新锚点 ${s.anchor}` : '尚未建立';
 
-  if (s.peers?.length) {
-    refs.peers.innerHTML = '';
-    for (const p of s.peers) {
-      const row = document.createElement('div');
-      row.className = 'kv';
+  // 签名身份：未签名时明说"可被冒名"，不粉饰
+  const id = s.identity;
+  if (id) {
+    refs.identityChip.textContent = id.signed ? '已签名' : '未签名';
+    refs.identityChip.classList.toggle('error', !id.signed);
+    refs.identityLine.textContent = id.signed
+      ? `签名密钥 ${id.key || '（读取中）'}`
+      : '未配置 user.signingkey，身份可被冒名';
+  }
 
-      const icon = document.createElement('i');
-      if (!p.ok) icon.style.color = 'var(--error)';
-      icon.textContent = p.ok ? 'cloud_done' : 'cloud_off';
+  refs.peers.innerHTML = '';
+  for (const p of s.peers ?? []) {
+    const row = document.createElement('div');
+    row.className = 'kv';
 
-      const box = document.createElement('div');
-      box.className = 'max';
-      const name = document.createElement('strong');
-      name.textContent = p.name ?? '';
-      const url = document.createElement('p');
-      url.className = 'small-text muted no-margin';
-      url.textContent = p.url ?? '';
-      box.append(name, url);
+    const icon = document.createElement('i');
+    if (!p.ok) icon.style.color = 'var(--error)';
+    icon.textContent = p.ok ? 'cloud_done' : 'cloud_off';
 
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.textContent = p.ok ? '一致' : '分歧';
+    const box = document.createElement('div');
+    box.className = 'max';
+    const name = document.createElement('strong');
+    name.textContent = p.name ?? '';
+    const url = document.createElement('p');
+    url.className = 'small-text muted no-margin';
+    url.textContent = p.note || p.url || '';
+    box.append(name, url);
 
-      row.append(icon, box, chip);
-      refs.peers.appendChild(row);
-    }
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = p.ok ? '一致' : '分歧';
+
+    row.append(icon, box, chip);
+    refs.peers.appendChild(row);
   }
 
   if (s.anchors > 0 && !refs.room.dataset.set) refs.room.dataset.set = '1';

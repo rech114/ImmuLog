@@ -172,6 +172,9 @@ func alarmEvent(v feed.Verdict) (Event, bool) {
 	case feed.ReasonSplit:
 		title = "检测到分裂视图"
 		detail = "两个远端对同一条 feed 给出了互不构成祖先关系的链尾：有人在对你和他人说不同的话。"
+	case feed.ReasonKeyChanged:
+		title = "检测到密钥被换掉"
+		detail = "链上出现了没有轮换公告背书的密钥变更：新密钥既不是上一条的，也没有被上一条签名声明。日志里那条消息不是本人发的。"
 	}
 	if v.Peer != "" {
 		detail += "（来源：" + v.Peer + "）"
