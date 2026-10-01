@@ -89,23 +89,33 @@ export default async function layout(browser, base, c) {
     c.ok(kv && kv.display === 'flex',
       `[${vp.name}] .kv is a flex container (display=${kv?.display} ${kv?.dir})`, { vp: vp.name, kv });
 
-    // Icon, heading and value must sit on one row: all three overlap vertically
+    // Icon, heading and value must sit on one row: their vertical spans must
+    // pairwise overlap. Comparing rounded `top` buckets was too fragile --
+    // a two-line title pushed the buckets apart and produced false failures
+    // while the row was in fact intact.
     const sameRow = await page.evaluate(() => {
       const el = document.querySelector('.kv');
       if (!el) return null;
-      const icon = el.querySelector('i');
-      const strong = el.querySelector('strong');
-      const val = el.querySelector('.chip');
-      const rects = [icon, strong, val].filter(Boolean).map((n) => n.getBoundingClientRect());
+      const nodes = [el.querySelector('i'), el.querySelector('strong'), el.querySelector('.chip')].filter(Boolean);
+      const rects = nodes.map((n) => n.getBoundingClientRect());
       if (rects.length < 2) return null;
-      const rows = new Set(rects.map((r) => Math.round(r.top / 10)));
+      let overlapAll = true;
+      for (let i = 0; i < rects.length && overlapAll; i += 1) {
+        for (let j = i + 1; j < rects.length; j += 1) {
+          const overlap = Math.min(rects[i].bottom, rects[j].bottom) - Math.max(rects[i].top, rects[j].top);
+          if (overlap <= 0) { overlapAll = false; break; }
+        }
+      }
       const minTop = Math.min(...rects.map((r) => r.top));
       const maxBottom = Math.max(...rects.map((r) => r.bottom));
-      const spread = +(maxBottom - minTop).toFixed(1);
-      return { rows: rows.size, spread, h: +el.getBoundingClientRect().height.toFixed(1) };
+      return {
+        ok: overlapAll,
+        spread: +(maxBottom - minTop).toFixed(1),
+        h: +el.getBoundingClientRect().height.toFixed(1),
+      };
     });
-    c.ok(sameRow && sameRow.rows === 1,
-      `[${vp.name}] icon, heading and value share a row (vertical spread ${sameRow?.spread}px)`, { vp: vp.name, sameRow });
+    c.ok(sameRow && sameRow.ok,
+      `[${vp.name}] icon, heading and value share a row (vertical span ${sameRow?.spread}px)`, { vp: vp.name, sameRow });
 
     // Safe area: confirm the left and right margins really exist
     const pad = await page.evaluate(() => ({
