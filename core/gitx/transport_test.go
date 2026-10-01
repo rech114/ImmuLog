@@ -11,9 +11,10 @@ import (
 	"testing"
 )
 
-// ── 夹具 ──────────────────────────────────────────────────────────
+// ── Fixtures ────────────────────────────────────────────────────
 
-// hub 建一个充当「共享中转」的 bare 仓库 —— 多源同步里最普通的那种。
+// hub creates a bare repository acting as a shared relay -- the most ordinary
+// thing in multi-source sync.
 func hub(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "hub.git")
@@ -23,7 +24,7 @@ func hub(t *testing.T) string {
 	return dir
 }
 
-// commit 造一个带序号 trailer 的提交。
+// commit creates a commit carrying a sequence trailer.
 func commit(t *testing.T, r *Repo, parent, body string, seq int) string {
 	t.Helper()
 	msg := body + "\n\nImmuLog-Kind: msg\nImmuLog-Seq: " + strconv.Itoa(seq) + "\n"
@@ -34,8 +35,9 @@ func commit(t *testing.T, r *Repo, parent, body string, seq int) string {
 	return oid
 }
 
-// push 需要 receive-pack。本机（aarch64 + proot + f2fs）的 receive-pack
-// 必定失败于 "bad pack"，这是环境限制而非代码问题 —— CI 上会真正执行。
+// push needs receive-pack. On this machine (aarch64 + proot + f2fs) it always
+// fails with "bad pack" -- an environment limit, not a code problem. CI really
+// runs it.
 func pushRef(t *testing.T, r *Repo, url, ref string) {
 	t.Helper()
 	err := r.PushRef(context.Background(), url, ref)
@@ -43,27 +45,28 @@ func pushRef(t *testing.T, r *Repo, url, ref string) {
 		return
 	}
 	if strings.Contains(err.Error(), "bad pack") || strings.Contains(err.Error(), "unpack should have generated") {
-		t.Skipf("本机 receive-pack 不可用（环境限制，CI 上会执行）：%v", err)
+		t.Skipf("receive-pack is unavailable here (environment limit; CI runs it): %v", err)
 	}
 	t.Fatalf("PushRef: %v", err)
 }
 
-// seedViaFetch 把 src 的 feed 填进 hub。
+// seedViaFetch fills the hub with src's feeds.
 //
-// 这里走 fetch 而不是 push —— 因为在上述环境限制下只有 upload-pack 可用。
-// 生产代码的 push 路径由 TestPushThenFetchIntoQuarantine 在 CI 上覆盖。
+// This fetches rather than pushes, because under the limit above only
+// upload-pack works. The production push path is covered by
+// TestPushThenFetchIntoQuarantine on CI.
 func seedViaFetch(t *testing.T, hubDir, srcDir string) {
 	t.Helper()
 	gitIn(t, hubDir, "", "fetch", "--quiet", srcDir, "+refs/feeds/*:refs/feeds/*")
 }
 
-// ── 传输 ──────────────────────────────────────────────────────────
+// ── Transport ───────────────────────────────────────────────────
 
 func TestPushThenFetchIntoQuarantine(t *testing.T) {
 	ctx := context.Background()
 	a, h, b := newRepo(t), hub(t), newRepo(t)
 
-	oid := commit(t, a, "", "来自 a", 1)
+	oid := commit(t, a, "", "from a", 1)
 	if err := a.UpdateRef(ctx, "refs/feeds/alice", oid, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -77,21 +80,22 @@ func TestPushThenFetchIntoQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != oid {
-		t.Fatalf("隔离区里应是 %s，得到 %q", oid, got)
+		t.Fatalf("the quarantine should hold %s, got %q", oid, got)
 	}
 
-	// 最关键的一条：fetch **绝不**写进可信命名空间
+	// The most important line: fetch **never** writes into the trusted namespace
 	if v, _ := b.Resolve(ctx, "refs/feeds/alice"); v != "" {
-		t.Fatalf("fetch 不得写进 refs/feeds/*，却写入了 %q", v)
+		t.Fatalf("fetch must not write into refs/feeds/*, yet wrote %q", v)
 	}
 }
 
-// 隔离区本来就该被覆盖：对端强制改写历史时，本地可信状态仍不受影响。
+// The quarantine is meant to be overwritten: when a peer forces a rewrite, local
+// trusted state is still unaffected.
 func TestFetchIntoOverwritesQuarantineOnly(t *testing.T) {
 	ctx := context.Background()
 	a, h, b := newRepo(t), hub(t), newRepo(t)
 
-	first := commit(t, a, "", "第一版", 1)
+	first := commit(t, a, "", "first version", 1)
 	if err := a.UpdateRef(ctx, "refs/feeds/alice", first, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -101,16 +105,16 @@ func TestFetchIntoOverwritesQuarantineOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, _ := b.Resolve(ctx, Quarantine+"r0/alice"); got != first {
-		t.Fatalf("首次拉取 = %q", got)
+		t.Fatalf("first fetch = %q", got)
 	}
 
-	// b 把可信状态钉在 first 上
+	// b pins its trusted state at first
 	if err := b.UpdateRef(ctx, "refs/feeds/alice", first, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	// a 另起一条平行链并强推（force push 的等价操作）
-	forced := commit(t, a, "", "另一条链", 2)
+	// a starts a parallel chain and force-pushes (the equivalent of a force push)
+	forced := commit(t, a, "", "another chain", 2)
 	if err := a.UpdateRef(ctx, "refs/feeds/alice", forced, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -120,10 +124,10 @@ func TestFetchIntoOverwritesQuarantineOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, _ := b.Resolve(ctx, Quarantine+"r0/alice"); got != forced {
-		t.Fatalf("隔离区应被覆盖成 %s，得到 %q", forced, got)
+		t.Fatalf("the quarantine should be overwritten with %s, got %q", forced, got)
 	}
 	if got, _ := b.Resolve(ctx, "refs/feeds/alice"); got != first {
-		t.Fatalf("可信状态必须纹丝不动，却变成了 %q", got)
+		t.Fatalf("trusted state must not budge, yet became %q", got)
 	}
 }
 
@@ -132,11 +136,11 @@ func TestFetchFromUnreachableRemoteFailsLoudly(t *testing.T) {
 	err := r.FetchInto(context.Background(),
 		filepath.Join(t.TempDir(), "nope.git"), "refs/feeds/*", Quarantine+"r0")
 	if err == nil {
-		t.Fatal("不可达的远端必须报错，不能静默")
+		t.Fatal("an unreachable remote must error, not fail silently")
 	}
 }
 
-// ── 对象原语 ──────────────────────────────────────────────────────
+// ── Object primitives ───────────────────────────────────────────
 
 func TestHashBlobMatchesGit(t *testing.T) {
 	r := newRepo(t)
@@ -152,18 +156,18 @@ func TestHashBlobMatchesGit(t *testing.T) {
 		t.Fatalf("HashBlob = %q，git hash-object = %q", only, want)
 	}
 	if blobExists(t, r.Dir, only) {
-		t.Fatal("write=false 时不应落盘")
+		t.Fatal("write=false should not store anything")
 	}
 
 	if _, err := r.HashBlob(ctx, data, true); err != nil {
 		t.Fatal(err)
 	}
 	if !blobExists(t, r.Dir, only) {
-		t.Fatal("write=true 时应已落盘")
+		t.Fatal("write=true should have stored it")
 	}
 }
 
-// blobExists 直接问 git 要答案 —— Repo.Exists 是给 commit 用的。
+// blobExists asks git directly -- Repo.Exists is meant for commits.
 func blobExists(t *testing.T, dir, oid string) bool {
 	t.Helper()
 	cmd := exec.Command("git", "-C", dir, "cat-file", "-e", oid)
@@ -175,9 +179,9 @@ func TestLogRangeReturnsOnlyNewOldestFirst(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
 
-	a := commit(t, r, "", "一", 1)
-	b := commit(t, r, a, "二", 2)
-	c := commit(t, r, b, "三", 3)
+	a := commit(t, r, "", "one", 1)
+	b := commit(t, r, a, "two", 2)
+	c := commit(t, r, b, "three", 3)
 	if err := r.UpdateRef(ctx, "refs/feeds/x", c, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -187,25 +191,25 @@ func TestLogRangeReturnsOnlyNewOldestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("应只有 2 条新提交，得到 %d", len(got))
+		t.Fatalf("expected only 2 new commits, got %d", len(got))
 	}
 	if got[0].OID != b || got[1].OID != c {
-		t.Fatalf("应为从旧到新 [二,三]，得到 [%s,%s]", got[0].OID, got[1].OID)
+		t.Fatalf("expected oldest-first [two,three], got [%s,%s]", got[0].OID, got[1].OID)
 	}
 	if got[0].Seq != "2" || got[1].Seq != "3" {
-		t.Fatalf("序号不对：%q %q", got[0].Seq, got[1].Seq)
+		t.Fatalf("wrong sequence numbers: %q %q", got[0].Seq, got[1].Seq)
 	}
 
 	all, _ := r.LogRange(ctx, "refs/feeds/x", "", 10)
 	if len(all) != 3 {
-		t.Fatalf("无 since 时应全量，得到 %d", len(all))
+		t.Fatalf("with no since it should return everything, got %d", len(all))
 	}
 }
 
 func TestTrailerValueReadsMultipleKeys(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
-	msg := "正文\n\nImmuLog-Snapshot: aaaa\nImmuLog-At: 2026-01-02T03:04:05Z\n"
+	msg := "body\n\nImmuLog-Snapshot: aaaa\nImmuLog-At: 2026-01-02T03:04:05Z\n"
 	oid, err := r.Commit(ctx, tree(t, r), "", msg, false)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +219,7 @@ func TestTrailerValueReadsMultipleKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(vals) != 3 {
-		t.Fatalf("应返回 3 个槽位，得到 %d", len(vals))
+		t.Fatalf("expected 3 slots back, got %d", len(vals))
 	}
 	if vals[0] != "aaaa" {
 		t.Errorf("Snapshot = %q", vals[0])
@@ -224,17 +228,17 @@ func TestTrailerValueReadsMultipleKeys(t *testing.T) {
 		t.Errorf("At = %q", vals[1])
 	}
 	if vals[2] != "" {
-		t.Errorf("缺失的 key 应为空串，得到 %q", vals[2])
+		t.Errorf("a missing key should be an empty string, got %q", vals[2])
 	}
 }
 
-// 签名状态由 git 自己判定（%G?），我们只翻译。
+// git decides the signature status (%G?); we only translate it.
 func TestSigStatusMapping(t *testing.T) {
 	for in, want := range map[string]string{
 		"G": "good", "U": "untrusted", "B": "bad", "N": "", "": "",
 	} {
 		if got := sigStatus(in); got != want {
-			t.Errorf("sigStatus(%q) = %q，期望 %q", in, got, want)
+			t.Errorf("sigStatus(%q) = %q, expected %q", in, got, want)
 		}
 	}
 }

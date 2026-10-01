@@ -11,9 +11,9 @@ import (
 	"testing"
 )
 
-// ── 测试夹具 ──────────────────────────────────────────────────────
+// ── Test fixtures ───────────────────────────────────────────────
 
-// git 直接在测试里跑 git 命令。生产代码禁止 os/exec，测试不受此限。
+// Run git directly from a test. Production code forbids os/exec; tests do not.
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return gitIn(t, dir, "", args...)
@@ -33,10 +33,12 @@ func gitIn(t *testing.T, dir, stdin string, args ...string) string {
 	return string(out)
 }
 
-// newRepo 建一个 bare 仓库并配好身份。全程隔离，不碰开发机的 ~/.gitconfig。
+// newRepo creates a bare repository with an identity, fully isolated from the
+// development machine's ~/.gitconfig.
 func newRepo(t *testing.T) *Repo {
 	t.Helper()
-	// 让 Identity() 只看到仓库本地配置 —— 否则测试会读到开发机的全局身份
+	// So Identity() sees only repo-local config; otherwise the test would read
+	// the developer's global identity
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 
@@ -58,16 +60,17 @@ func tree(t *testing.T, r *Repo) string {
 	return tr
 }
 
-// ── 生命周期 ──────────────────────────────────────────────────────
+// ── Lifecycle ───────────────────────────────────────────────────
 
 func TestInitCreatesBareRepo(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "x.git")
 	if err := Init(context.Background(), dir); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	// bare 仓库没有工作区：这是刻意的（消息提交不落任何文件）
+	// A bare repository has no worktree, deliberately (committing a message
+	// writes no files at all)
 	if out := git(t, dir, "rev-parse", "--is-bare-repository"); strings.TrimSpace(out) != "true" {
-		t.Fatalf("应为 bare 仓库，得到 %q", out)
+		t.Fatalf("expected a bare repository, got %q", out)
 	}
 }
 
@@ -79,32 +82,33 @@ func TestIdentityRequiresConfig(t *testing.T) {
 	if err := Init(context.Background(), dir); err != nil {
 		t.Fatal(err)
 	}
-	// 没配 user.name/user.email 时必须报错，而不是返回空串
+	// With no user.name/user.email it must error rather than return empty strings
 	if _, _, err := Open(dir).Identity(context.Background()); err == nil {
-		t.Fatal("未配置身份时应报错")
+		t.Fatal("an unconfigured identity must error")
 	}
 }
 
-// ── 对象 ──────────────────────────────────────────────────────────
+// ── Objects ─────────────────────────────────────────────────────
 
-// Commit 必须能在没有 index、没有 worktree 的 bare 仓库里工作 —— 核心纪律之一。
+// Commit must work in a bare repository with no index and no worktree -- one of
+// the core disciplines.
 func TestCommitTreeNeedsNoIndexNorWorktree(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
 
 	if out := git(t, r.Dir, "rev-parse", "--is-bare-repository"); strings.TrimSpace(out) != "true" {
-		t.Fatal("前置条件：应为 bare")
+		t.Fatal("precondition: must be bare")
 	}
 
-	oid, err := r.Commit(ctx, tree(t, r), "", "第一条\n\nImmuLog-Seq: 1\n", false)
+	oid, err := r.Commit(ctx, tree(t, r), "", "the first one\n\nImmuLog-Seq: 1\n", false)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	if !isHex40(oid) {
-		t.Fatalf("应返回 40 位十六进制对象名，得到 %q", oid)
+		t.Fatalf("expected a 40-char hex object name, got %q", oid)
 	}
 	if ok, _ := r.Exists(ctx, oid); !ok {
-		t.Fatal("commit 应已落盘")
+		t.Fatal("the commit should be written to disk")
 	}
 }
 
@@ -112,7 +116,7 @@ func TestLogParsesTrailersAndBody(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
 
-	body := "正文第一行\n正文第二行"
+	body := "first body line\nsecond body line"
 	oid, err := r.Commit(ctx, tree(t, r), "", body+"\n\nImmuLog-Kind: msg\nImmuLog-Seq: 7\n", false)
 	if err != nil {
 		t.Fatal(err)
@@ -126,25 +130,27 @@ func TestLogParsesTrailersAndBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("应读回 1 条，得到 %d", len(got))
+		t.Fatalf("expected 1 commit back, got %d", len(got))
 	}
 	if got[0].Seq != "7" {
-		t.Errorf("Seq = %q，期望 7", got[0].Seq)
+		t.Errorf("Seq = %q, expected 7", got[0].Seq)
 	}
 	if got[0].Author != "tester" {
 		t.Errorf("Author = %q", got[0].Author)
 	}
-	if !strings.Contains(got[0].Body, "正文第二行") {
-		t.Errorf("Body 应保留多行正文，得到 %q", got[0].Body)
+	if !strings.Contains(got[0].Body, "second body line") {
+		t.Errorf("Body should keep the multi-line text, got %q", got[0].Body)
 	}
 }
 
-// 对抗性输入：正文里塞记录分隔符 + 伪造 trailer，不得破坏解析。
+// Adversarial input: record separators and forged trailers inside the body must
+// not break parsing.
 func TestLogSurvivesAdversarialBody(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
 
-	// \x1e 是记录分隔、\x1f 是字段分隔，都是合法字节 —— 必须扛住
+	// \x1e separates records and \x1f separates fields; both are legal bytes and
+	// must be survived
 	evil := "a\x1eb\x1fc\n\nImmuLog-Seq: 999\n"
 	oid, err := r.Commit(ctx, tree(t, r), "", evil+"\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n", false)
 	if err != nil {
@@ -159,23 +165,25 @@ func TestLogSurvivesAdversarialBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("正文里的分隔符不得切出多余记录：得到 %d 条", len(got))
+		t.Fatalf("separators in the body must not split extra records: got %d", len(got))
 	}
-	// git 自己的 trailer 解析取最后一次出现 —— 伪造的 999 不应生效
+	// git's own trailer parser takes the last occurrence, so the forged 999 must
+	// not take effect
 	if got[0].Seq != "2" {
-		t.Errorf("注入的 trailer 不应生效：Seq = %q，期望 2", got[0].Seq)
+		t.Errorf("the injected trailer must not take effect: Seq = %q, expected 2", got[0].Seq)
 	}
 }
 
-// NUL 不由我们防 —— git 自己就拒绝。这里把这条保证固定下来当成回归护栏。
+// We do not defend against NUL -- git refuses it. This pins that guarantee down
+// as a regression guard.
 func TestNulByteInMessageIsRejectedByGit(t *testing.T) {
 	r := newRepo(t)
 	_, err := r.Commit(context.Background(), tree(t, r), "", "a\x00b\n\nImmuLog-Seq: 1\n", false)
 	if err == nil {
-		t.Fatal("git 应拒绝含 NUL 的 commit message")
+		t.Fatal("git should refuse a commit message containing NUL")
 	}
 	if !strings.Contains(err.Error(), "NUL") {
-		t.Errorf("错误信息应提到 NUL，得到 %v", err)
+		t.Errorf("the error should mention NUL, got %v", err)
 	}
 }
 
@@ -183,16 +191,16 @@ func TestLogOnUnknownRefIsEmptyNotError(t *testing.T) {
 	r := newRepo(t)
 	got, err := r.Log(context.Background(), "refs/feeds/nope", 10)
 	if err != nil {
-		t.Fatalf("未知 ref 不应报错：%v", err)
+		t.Fatalf("an unknown ref should not error: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("应为空，得到 %d", len(got))
+		t.Fatalf("expected empty, got %d", len(got))
 	}
 }
 
-// ── 引用与 CAS ────────────────────────────────────────────────────
+// ── Refs and CAS ────────────────────────────────────────────────
 
-// 这是整个防篡改设计的基石，逐条验证。
+// The cornerstone of the whole tamper-evidence design, verified point by point.
 func TestUpdateRefCAS(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
@@ -207,25 +215,25 @@ func TestUpdateRefCAS(t *testing.T) {
 	}
 	a, b := mk("one"), mk("two")
 
-	// ① 首次创建：old 为空 → 允许
+	// 1) first creation: empty old -> allowed
 	if err := r.UpdateRef(ctx, "refs/feeds/x", a, ""); err != nil {
-		t.Fatalf("首次创建应成功：%v", err)
+		t.Fatalf("first creation should succeed: %v", err)
 	}
-	// ② old 正确 → 前进
+	// 2) correct old -> advance
 	if err := r.UpdateRef(ctx, "refs/feeds/x", b, a); err != nil {
-		t.Fatalf("old 正确时应成功：%v", err)
+		t.Fatalf("a correct old should succeed: %v", err)
 	}
-	// ③ old 错误 → 必须被拒，且归一成 ErrCASFailed
+	// 3) wrong old -> must be refused, normalised to ErrCASFailed
 	err := r.UpdateRef(ctx, "refs/feeds/x", a, a)
 	if !errors.Is(err, ErrCASFailed) {
-		t.Fatalf("old 不符时应返回 ErrCASFailed，得到 %v", err)
+		t.Fatalf("a mismatched old should return ErrCASFailed, got %v", err)
 	}
 	if got, _ := r.Resolve(ctx, "refs/feeds/x"); got != b {
-		t.Fatalf("CAS 失败后引用不得被改动：%q", got)
+		t.Fatalf("the ref must not change after a CAS failure: %q", got)
 	}
-	// ④ 已存在时用全零 old 创建 → 拒绝
+	// 4) creating with an all-zero old when it exists -> refused
 	if err := r.EnsureRef(ctx, "refs/feeds/x", a); !errors.Is(err, ErrCASFailed) {
-		t.Fatalf("EnsureRef 不应覆盖已存在的引用，得到 %v", err)
+		t.Fatalf("EnsureRef must not overwrite an existing ref, got %v", err)
 	}
 }
 
@@ -233,10 +241,10 @@ func TestResolveMissingReturnsEmpty(t *testing.T) {
 	r := newRepo(t)
 	got, err := r.Resolve(context.Background(), "refs/feeds/ghost")
 	if err != nil {
-		t.Fatalf("缺失引用不应报错：%v", err)
+		t.Fatalf("a missing ref should not error: %v", err)
 	}
 	if got != "" {
-		t.Fatalf("应为空串，得到 %q", got)
+		t.Fatalf("expected an empty string, got %q", got)
 	}
 }
 
@@ -250,17 +258,18 @@ func TestIsAncestor(t *testing.T) {
 	side, _ := r.Commit(ctx, tr, root, "side\n\nImmuLog-Seq: 2\n", false)
 
 	if ok, _ := r.IsAncestor(ctx, root, child); !ok {
-		t.Error("root 应是 child 的祖先")
+		t.Error("root should be an ancestor of child")
 	}
 	if ok, _ := r.IsAncestor(ctx, child, root); ok {
-		t.Error("child 不可能是 root 的祖先")
+		t.Error("child cannot be an ancestor of root")
 	}
-	// 兄弟节点之间不构成祖先关系 —— 这正是「引用重写」的判定
+	// Siblings are not ancestors of one another -- exactly the test for a
+	// reference rewrite
 	if ok, _ := r.IsAncestor(ctx, child, side); ok {
-		t.Error("兄弟节点之间应为 false")
+		t.Error("siblings should yield false")
 	}
 	if ok, _ := r.IsAncestor(ctx, "", child); ok {
-		t.Error("空值应为 false")
+		t.Error("empty values should yield false")
 	}
 }
 
@@ -278,7 +287,7 @@ func TestRefsSnapshotInOneCall(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 干扰项：不在 feeds 命名空间内，必须被前缀过滤掉
+	// Distractor: outside the feeds namespace, must be filtered out by the prefix
 	w, _ := r.Commit(ctx, tr, "", "w\n\nImmuLog-Seq: 1\n", false)
 	if err := r.UpdateRef(ctx, "refs/witness/a", w, ""); err != nil {
 		t.Fatal(err)
@@ -289,11 +298,11 @@ func TestRefsSnapshotInOneCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(refs) != 3 {
-		t.Fatalf("应只拿到 3 条 feed 引用，得到 %d：%+v", len(refs), refs)
+		t.Fatalf("expected exactly 3 feed refs, got %d: %+v", len(refs), refs)
 	}
 	for _, ref := range refs {
 		if !isHex40(ref.OID) {
-			t.Errorf("%s 的 OID 形状不对：%q", ref.Name, ref.OID)
+			t.Errorf("%s has a malformed OID: %q", ref.Name, ref.OID)
 		}
 	}
 }
@@ -319,22 +328,23 @@ func TestCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n != 4 {
-		t.Fatalf("Count = %d，期望 4", n)
+		t.Fatalf("Count = %d, expected 4", n)
 	}
 }
 
-// ── 边界 ──────────────────────────────────────────────────────────
+// ── Edge cases ──────────────────────────────────────────────────
 
-// 参数是数组、正文走 stdin —— 因此 shell 元字符不具备任何特殊含义。
+// Arguments are arrays and bodies go through stdin, so shell metacharacters have
+// no special meaning whatsoever.
 func TestArgumentInjectionIsInert(t *testing.T) {
 	r := newRepo(t)
 	nasty := "'; rm -rf / # `whoami` $(id) && | ; \n"
 	oid, err := r.Commit(context.Background(), tree(t, r), "", nasty+"\n\nImmuLog-Seq: 1\n", false)
 	if err != nil {
-		t.Fatalf("含元字符的正文应被当作纯文本：%v", err)
+		t.Fatalf("a body with metacharacters should be treated as plain text: %v", err)
 	}
 	if !isHex40(oid) {
-		t.Fatalf("对象名形状不对：%q", oid)
+		t.Fatalf("malformed object name: %q", oid)
 	}
 }
 
@@ -343,13 +353,13 @@ func TestErrorCarriesStderrAndCommand(t *testing.T) {
 	_, err := r.run(context.Background(), nil, "rev-parse", "--verify", "refs/heads/definitely-not-here")
 	var ge *Error
 	if !errors.As(err, &ge) {
-		t.Fatalf("应返回 *Error，得到 %T (%v)", err, err)
+		t.Fatalf("expected *Error, got %T (%v)", err, err)
 	}
 	if ge.Code == 0 {
-		t.Error("非零退出码应被记录")
+		t.Error("the non-zero exit code should be recorded")
 	}
 	if !strings.Contains(ge.Error(), "git rev-parse") {
-		t.Errorf("错误信息应包含命令：%s", ge.Error())
+		t.Errorf("the error should include the command: %s", ge.Error())
 	}
 }
 
