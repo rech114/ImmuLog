@@ -1,7 +1,36 @@
 name: CI
 
+# What triggers this, and what deliberately does not.
+#
+# A push that only touches prose or licence text cannot break a build, and
+# spending two and a half minutes pretending otherwise teaches people to ignore
+# the badge. The list is a **denylist** rather than an allowlist on purpose: a
+# file nobody thought of still gets tested, which is the direction a mistake
+# should fall in. `.github/` is deliberately absent from it, so a change to this
+# file is always exercised by the thing it describes.
+#
+# `pull_request` is here because CONTRIBUTING.md promises that a pull request is
+# checked, and for the DCO that promise matters most *before* a merge. A fork's
+# PR does not fire `push` on this repository, so the two do not double up.
+#
+# One honest gap: skipping the workflow skips the DCO check with it, so a
+# prose-only commit could land unsigned. That check walks the whole history, so
+# the next push that does run catches it -- late, but not never.
 on:
   push:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'DCO'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'DCO'
   workflow_dispatch:
 
 jobs:
