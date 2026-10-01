@@ -7,3 +7,6 @@ immulog
 tools/node_modules/
 tools/package-lock.json
 artifacts/
+
+# 临时排查脚本不进仓库
+tools/diag*.mjs
