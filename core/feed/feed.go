@@ -1,4 +1,6 @@
-// Package feed 是 Immutalk 的领域层。
+// SPDX-License-Identifier: Apache-2.0
+
+// Package feed 是 ImmuLog 的领域层。
 //
 // 一条 feed 就是一个用户的 append-only 消息链，落地为 refs/feeds/<pub>。
 // 每条消息是一个 commit 对象，结构元数据放在 commit trailer 里
@@ -18,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // Kind 是消息类型。用 kind 区分事件而不是开多个端点（§7.2）。
@@ -32,11 +34,11 @@ const (
 
 // trailer 键名。改这里等于改协议。
 const (
-	trailerKind     = "Immutalk-Kind"
-	trailerSeq      = "Immutalk-Seq"
-	trailerRetracts = "Immutalk-Retracts"
-	trailerReason   = "Immutalk-Reason"
-	trailerKey      = "Immutalk-Key"
+	trailerKind     = "ImmuLog-Kind"
+	trailerSeq      = "ImmuLog-Seq"
+	trailerRetracts = "ImmuLog-Retracts"
+	trailerReason   = "ImmuLog-Reason"
+	trailerKey      = "ImmuLog-Key"
 )
 
 // MaxBody 是单条消息正文的上限。
@@ -268,7 +270,7 @@ func (s *Store) emptyTree(ctx context.Context) (string, error) {
 // 首段绝不能为空：否则 commit message 以空行开头，git 的 trailer 解析会失效。
 //
 // ⚠️ trailer 值必须过 sanitizeValue：值里一个换行就能凭空造出
-// `Immutalk-Seq: 999` 这种伪行，而 git 取最后一次出现 —— 伪造的会赢。
+// `ImmuLog-Seq: 999` 这种伪行，而 git 取最后一次出现 —— 伪造的会赢。
 func render(kind Kind, body string, seq int, retracts, reason string) string {
 	var head string
 	if kind == KindRetract {
@@ -371,7 +373,7 @@ func looksLikeTrailers(block string) bool {
 			continue
 		}
 		k, _, ok := strings.Cut(line, ":")
-		if !ok || !strings.HasPrefix(k, "Immutalk-") {
+		if !ok || !strings.HasPrefix(k, "ImmuLog-") {
 			return false
 		}
 	}
@@ -390,7 +392,7 @@ func sanitizeText(s string) string {
 // sanitizeValue 把内容压成单行，供 trailer 值使用。
 //
 // 这是条安全边界：trailer 值里只要有换行，就能凭空造出一行
-// `Immutalk-Seq: 999`；而 git 的 trailer 解析取**最后一次**出现，
+// `ImmuLog-Seq: 999`；而 git 的 trailer 解析取**最后一次**出现，
 // 于是伪造的会覆盖真的。压成单行即可根除。
 func sanitizeValue(s string) string {
 	s = sanitizeText(s)

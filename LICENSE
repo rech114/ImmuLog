@@ -1,0 +1,69 @@
+ImmuLog — Split Licensing
+==========================
+
+ImmuLog is licensed under two licenses, split by component:
+
+  Component                       License
+  ------------------------------  ----------------------------------
+  core/                           Apache License 2.0
+  internal/web/                   GNU AGPL v3.0 or later
+  main.go                         GNU AGPL v3.0 or later
+  web/                            GNU AGPL v3.0 or later
+  everything else                 GNU AGPL v3.0 or later
+
+Full texts:
+
+  LICENSES/Apache-2.0.txt
+  LICENSES/AGPL-3.0-or-later.txt
+
+Each source file carries an `SPDX-License-Identifier` tag; when this file
+and a file header disagree, the file header wins.
+
+
+Why the split
+-------------
+
+`core/` (package `gitx` + package `feed`) turns a plain Git repository into a
+tamper-evident, append-only message log: content-addressed messages, signed
+identities, local witness anchors, key-rotation chains. It is a general-purpose
+library with no server, no HTTP and no third-party dependencies.
+
+It is Apache-2.0 so that **anyone can build on it without asking** — including
+building a completely different client, or embedding it in a product that never
+touches our server.
+
+Everything else is the running service: the HTTP/SSE transport and the
+integrity/sync loops. It is AGPL-3.0-or-later so that **anyone who runs this
+code as a network service must keep their version of it open**. Improving
+ImmuLog and offering it to others as a closed service is not permitted.
+
+
+One fact that must not be glossed over
+--------------------------------------
+
+The default build produces a **single binary** that links both halves. Because
+Apache-2.0 is compatible with AGPL-3.0, that combination is allowed — but
+**distributing that binary means distributing an AGPL-3.0 work**, and all of
+AGPL-3.0's obligations apply to it.
+
+So the Apache grant on `core/` is meaningful for exactly one thing, which is the
+thing that matters: **a third party can `go get` the core and reuse it under
+permissive terms, without ever touching our service.** That is why `core/` is
+not under `internal/` — Go forbids importing `internal/`, which would have made
+the Apache grant decorative.
+
+
+Contributions
+-------------
+
+Contributions are accepted under the Developer Certificate of Origin (see
+`DCO`), not a CLA. That means **you keep your copyright**, and the project
+cannot be relicensed later without the consent of every contributor.
+
+See `CONTRIBUTING.md`.
+
+
+Copyright
+---------
+
+Copyright (c) 2026 ImmuLog contributors.

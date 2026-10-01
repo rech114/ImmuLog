@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -9,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // ── 夹具：现场生成 SSH 密钥，不依赖开发机环境 ─────────────────────

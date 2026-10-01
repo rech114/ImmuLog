@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -6,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // Snapshot 是某一时刻「本机认为每条 feed 的链尾在哪」的完整记录。

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // mock.js —— 只被 stream.js 引用（?demo=1）。
 // 目的：后端还没写，但界面要先能看。契约与真实 SSE 完全相同。
 

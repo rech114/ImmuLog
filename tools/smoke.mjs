@@ -64,7 +64,7 @@ async function boot(tag, search) {
   dom.window.uiCalls = 0;
   globalThis.ui = () => { dom.window.uiCalls++; };   // Beer CSS 的 JS：桩
 
-  const dir = `/tmp/immutalk-smoke-${tag}`;
+  const dir = `/tmp/immulog-smoke-${tag}`;
   await rm(dir, { recursive: true, force: true });
   await cp(APP, dir, { recursive: true });
   await import(pathToFileURL(join(dir, 'main.js')).href);

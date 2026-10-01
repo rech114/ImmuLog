@@ -37,8 +37,8 @@ function isAncestor(dir, a, b) {
 }
 
 export default async function federation(browser, _base, c) {
-  const work = await mkdtemp(join(tmpdir(), 'immutalk-fed-'));
-  const bin = join(work, 'immutalk');
+  const work = await mkdtemp(join(tmpdir(), 'immulog-fed-'));
+  const bin = join(work, 'immulog');
   const hub = join(work, 'hub.git');
   const aRepo = join(work, 'repoA');
   const bRepo = join(work, 'repoB');
@@ -93,7 +93,7 @@ export default async function federation(browser, _base, c) {
     // ── 3) 节点 B：同步过来 ─────────────────────────────────────
     B = startNode({
       bin, repo: bRepo, port: portB, remotes: [remote], who: 'bob',
-      env: { IMMUTALK_SYNC_INTERVAL: SYNC_MS, IMMUTALK_ANCHOR_INTERVAL: '1s' },
+      env: { IMMULOG_SYNC_INTERVAL: SYNC_MS, IMMULOG_ANCHOR_INTERVAL: '1s' },
     });
     const healthB = await waitHealthy(B.base).catch((e) => {
       c.ok(false, `${e.message}\nB 日志：\n${B.log.slice(-600)}`);
@@ -149,7 +149,7 @@ export default async function federation(browser, _base, c) {
     git(liarDir, 'config', 'user.email', 'alice@example.com');
 
     const tree = git(liarDir, 'hash-object', '-w', '-t', 'tree', '--stdin');
-    const forged = gitIn(liarDir, '被改写的历史\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n',
+    const forged = gitIn(liarDir, '被改写的历史\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n',
       'commit-tree', tree, '-p', first.oid);
     c.ok(forged !== sent.oid, '前置条件：伪造的是另一个对象');
     git(liarDir, 'update-ref', aRef, forged);

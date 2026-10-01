@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -6,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // ── 夹具 ──────────────────────────────────────────────────────────
@@ -163,7 +165,7 @@ func TestSyncRejectsRewrittenForeignHistory(t *testing.T) {
 	// alice 的仓库被外部攻击者改写：从第一条另起平行链
 	parent := rawGit(t, aDir, "rev-parse", second.OID+"^")
 	tree := rawGit(t, aDir, "hash-object", "-w", "-t", "tree", "--stdin")
-	forged := rawGitIn(t, aDir, "被改写\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n",
+	forged := rawGitIn(t, aDir, "被改写\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n",
 		"commit-tree", tree, "-p", parent)
 	rawGit(t, aDir, "update-ref", aRef, forged)
 	publish(t, hubDir, aDir)
@@ -209,7 +211,7 @@ func liar(t *testing.T, srcDir, ref, parent string) string {
 	rawGit(t, dir, "config", "user.email", "alice@example.com")
 
 	tree := rawGit(t, dir, "hash-object", "-w", "-t", "tree", "--stdin")
-	forged := rawGitIn(t, dir, "另一条历史\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n",
+	forged := rawGitIn(t, dir, "另一条历史\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n",
 		"commit-tree", tree, "-p", parent)
 	rawGit(t, dir, "update-ref", ref, forged)
 	return dir

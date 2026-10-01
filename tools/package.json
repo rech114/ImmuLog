@@ -1,5 +1,5 @@
 {
-  "name": "immutalk-tools",
+  "name": "immulog-tools",
   "private": true,
   "type": "module",
   "description": "开发/CI 工具。不属于运行时；web/ 不引用这里，embed 出去的仍是零依赖前端。",

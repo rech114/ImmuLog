@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // store.js —— 唯一持有状态的地方。
 // 不许碰 DOM，不许碰网络。对外只有 upsert / list / get / subscribe。
 

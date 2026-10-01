@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package web
 
 import (
@@ -18,8 +20,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"immutalk/internal/feed"
-	"immutalk/internal/gitx"
+	"immulog/core/feed"
+	"immulog/core/gitx"
 )
 
 // ── 夹具 ──────────────────────────────────────────────────────────
@@ -58,7 +60,7 @@ func newServer(t *testing.T) (*httptest.Server, *feed.Store, string) {
 	}
 
 	files := fstest.MapFS{
-		"index.html":  &fstest.MapFile{Data: []byte("<!doctype html><title>Immutalk</title>")},
+		"index.html":  &fstest.MapFile{Data: []byte("<!doctype html><title>ImmuLog</title>")},
 		"app/main.js": &fstest.MapFile{Data: []byte("export const x = 1;")},
 	}
 	_ = fs.FS(files)
@@ -372,7 +374,7 @@ func TestStreamAlarmsOnTamperedHistory(t *testing.T) {
 	// 外部攻击者：从 a 另起一条平行链并强推
 	parent := rawGit(t, dir, "", "rev-parse", head+"^")
 	tree := rawGit(t, dir, "", "hash-object", "-w", "-t", "tree", "--stdin")
-	forged := rawGit(t, dir, "伪造\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n", "commit-tree", tree, "-p", parent)
+	forged := rawGit(t, dir, "伪造\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n", "commit-tree", tree, "-p", parent)
 	rawGit(t, dir, "", "update-ref", feed.FeedRef(store.Pub()), forged)
 
 	resp, err := http.Get(srv.URL + "/api/stream")

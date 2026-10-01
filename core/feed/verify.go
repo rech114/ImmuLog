@@ -1,10 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
 	"context"
 	"strings"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // feed 与 witness 的命名空间。

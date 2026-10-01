@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package gitx
 
 import (
@@ -16,9 +18,9 @@ import (
 // %G? 是 git 自己的签名状态：N=未签名 G=有效 U=密钥未知 B=签名损坏。
 // %GK 是签名者的密钥指纹 —— 密钥链条就是靠它逐条串起来的。
 const logFormat = "%H%x1f%an%x1f%at%x1f%G?%x1f%GK%x1f" +
-	"%(trailers:key=Immutalk-Seq,valueonly)%x1f" +
-	"%(trailers:key=Immutalk-Retracts,valueonly)%x1f" +
-	"%(trailers:key=Immutalk-Reason,valueonly)%x1f" +
+	"%(trailers:key=ImmuLog-Seq,valueonly)%x1f" +
+	"%(trailers:key=ImmuLog-Retracts,valueonly)%x1f" +
+	"%(trailers:key=ImmuLog-Reason,valueonly)%x1f" +
 	"%B"
 
 // RawCommit 是 log 解析出的一条原始提交。
@@ -33,8 +35,8 @@ type RawCommit struct {
 	Seq      string
 	Retracts string
 	Reason   string
-	Kind     string // `Immutalk-Kind` trailer
-	Declared string // `Immutalk-Key` trailer（只有轮换公告才有）
+	Kind     string // `ImmuLog-Kind` trailer
+	Declared string // `ImmuLog-Key` trailer（只有轮换公告才有）
 	Body     string
 }
 
@@ -162,8 +164,8 @@ func parseLog(raw string) []RawCommit {
 			Reason:   strings.TrimSpace(f[7]),
 			Body:     f[8],
 		}
-		c.Declared = trailerIn(f[8], "Immutalk-Key")
-		c.Kind = trailerIn(f[8], "Immutalk-Kind")
+		c.Declared = trailerIn(f[8], "ImmuLog-Key")
+		c.Kind = trailerIn(f[8], "ImmuLog-Kind")
 		if secs, err := strconv.ParseInt(strings.TrimSpace(f[2]), 10, 64); err == nil {
 			c.At = time.Unix(secs, 0).UTC()
 		}

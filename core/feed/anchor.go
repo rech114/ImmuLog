@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -10,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // anchorRef 是锚定链的链尾。锚定只追加，永不改写。
@@ -69,10 +71,10 @@ func AnchorNow(ctx context.Context, repo *gitx.Repo, pub Publisher, sign bool) (
 	var b strings.Builder
 	b.WriteString(snap.Text)
 	b.WriteByte('\n')
-	b.WriteString("Immutalk-Snapshot: " + snap.Digest + "\n")
-	b.WriteString("Immutalk-At: " + now.Format(time.RFC3339) + "\n")
+	b.WriteString("ImmuLog-Snapshot: " + snap.Digest + "\n")
+	b.WriteString("ImmuLog-At: " + now.Format(time.RFC3339) + "\n")
 	if receipt != "" {
-		b.WriteString("Immutalk-External: " + receipt + "\n")
+		b.WriteString("ImmuLog-External: " + receipt + "\n")
 	}
 
 	tree, err := repo.EmptyTree(ctx)
@@ -102,7 +104,7 @@ func AnchorHead(ctx context.Context, repo *gitx.Repo) (Anchor, error) {
 		return Anchor{}, err
 	}
 	vals, err := repo.TrailerValue(ctx, head,
-		"Immutalk-Snapshot", "Immutalk-At", "Immutalk-External")
+		"ImmuLog-Snapshot", "ImmuLog-At", "ImmuLog-External")
 	if err != nil {
 		return Anchor{}, err
 	}

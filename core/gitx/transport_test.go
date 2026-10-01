@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package gitx
 
 import (
@@ -24,7 +26,7 @@ func hub(t *testing.T) string {
 // commit 造一个带序号 trailer 的提交。
 func commit(t *testing.T, r *Repo, parent, body string, seq int) string {
 	t.Helper()
-	msg := body + "\n\nImmutalk-Kind: msg\nImmutalk-Seq: " + strconv.Itoa(seq) + "\n"
+	msg := body + "\n\nImmuLog-Kind: msg\nImmuLog-Seq: " + strconv.Itoa(seq) + "\n"
 	oid, err := r.Commit(context.Background(), tree(t, r), parent, msg, false)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -203,12 +205,12 @@ func TestLogRangeReturnsOnlyNewOldestFirst(t *testing.T) {
 func TestTrailerValueReadsMultipleKeys(t *testing.T) {
 	r := newRepo(t)
 	ctx := context.Background()
-	msg := "正文\n\nImmutalk-Snapshot: aaaa\nImmutalk-At: 2026-01-02T03:04:05Z\n"
+	msg := "正文\n\nImmuLog-Snapshot: aaaa\nImmuLog-At: 2026-01-02T03:04:05Z\n"
 	oid, err := r.Commit(ctx, tree(t, r), "", msg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	vals, err := r.TrailerValue(ctx, oid, "Immutalk-Snapshot", "Immutalk-At", "Immutalk-Missing")
+	vals, err := r.TrailerValue(ctx, oid, "ImmuLog-Snapshot", "ImmuLog-At", "ImmuLog-Missing")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -7,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // ErrNoSigningKey 表示仓库没配签名密钥。
@@ -37,7 +39,7 @@ func ProbeSigning(ctx context.Context, repo *gitx.Repo) (string, error) {
 		return "", err
 	}
 	// 会产生一个游离对象，无所谓 —— 换来的是"签名真的能用"这个确定性
-	oid, err := repo.Commit(ctx, tree, "", "Immutalk 签名自检\n", true)
+	oid, err := repo.Commit(ctx, tree, "", "ImmuLog 签名自检\n", true)
 	if err != nil {
 		return "", errors.Join(ErrSigningBroken, err)
 	}
@@ -121,7 +123,7 @@ func (s *Store) CurrentKey(ctx context.Context) (string, error) {
 // 顺序很重要：**先公告，再换配置**。
 //
 //	git config user.signingkey <新密钥>   ← 不要先做这一步
-//	Immutalk 先调用 DeclareKey(新指纹)
+//	ImmuLog 先调用 DeclareKey(新指纹)
 //	然后才把 user.signingkey 指过去
 //
 // 为什么不让调用方直接传旧密钥路径去签：git 的 ssh 签名里 `-S<keyid>`

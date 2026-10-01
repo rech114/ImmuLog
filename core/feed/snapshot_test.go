@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -5,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // ── 快照 ──────────────────────────────────────────────────────────

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -124,7 +126,7 @@ func TestAnchorPublishesExternally(t *testing.T) {
 	}
 
 	// 回执必须落到链上，事后可查 —— 这才是"外部锚定"的意义
-	vals, err := repo.TrailerValue(ctx, a.OID, "Immutalk-External")
+	vals, err := repo.TrailerValue(ctx, a.OID, "ImmuLog-External")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +175,7 @@ func TestAnchorSanitizesReceipt(t *testing.T) {
 	ctx := context.Background()
 	mustSend(t, storeOf(t, repo, "alice"), "一")
 
-	pub := &recordingPublisher{body: "ok\x1f\x1e\nImmutalk-Snapshot: forged"}
+	pub := &recordingPublisher{body: "ok\x1f\x1e\nImmuLog-Snapshot: forged"}
 	a, err := AnchorNow(ctx, repo, pub, false)
 	if err != nil {
 		t.Fatal(err)

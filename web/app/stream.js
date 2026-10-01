@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // stream.js —— 唯一碰 EventSource 的地方。
 // 契约：connect({ since, onEvent }) -> 同步回放 / 实时推送同一套回调。
 // 事件 id 就是 commit 的 OID，所以断线续传是白送的（Last-Event-ID）。

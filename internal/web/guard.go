@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // guard.go —— 后台巡检：完整性、多源同步、外部锚定。
 //
 // 三件事各一个循环，各一个间隔。它们产生的告警不是 toast，
@@ -10,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"immutalk/internal/feed"
+	"immulog/core/feed"
 )
 
 // 后台循环的默认间隔。环境变量可覆盖（测试与运维都靠它）。

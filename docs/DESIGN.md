@@ -1,4 +1,4 @@
-# Immutalk 设计文档
+# ImmuLog 设计文档
 
 > 一个把 Git 当作信任根（而非仅仅是数据库）的聊天系统。
 > 目标不是「防止撤回」，而是 **撤回可证明**。
@@ -108,7 +108,7 @@
 
 原型的做法是所有人往 `refs/heads/main` 写。后果是**第二条消息必然是非快进，必然被拒**（实测 `! [rejected] (non-fast-forward)`）。
 
-Immutalk **每人一条 feed**：
+ImmuLog **每人一条 feed**：
 
 ```
 refs/feeds/<pubkey-alice>
@@ -130,9 +130,9 @@ commit object
 └── message:
       第二条消息                                ← 人类可读正文
 
-      Immutalk-Seq: 2                          ← 单调序号（防回滚）
-      Immutalk-Retracts: <被撤回的 OID>         ← 撤回（可选）
-      Immutalk-Receipt: <我确认收到的对方 OID>   ← 回执（可选）
+      ImmuLog-Seq: 2                          ← 单调序号（防回滚）
+      ImmuLog-Retracts: <被撤回的 OID>         ← 撤回（可选）
+      ImmuLog-Receipt: <我确认收到的对方 OID>   ← 回执（可选）
 ```
 
 Trailer 是 Git 原生的键值语法，`%(trailers:key=...,valueonly)` 可直接提取，**人可读、机器可解析、`git log` 里直接看得见**。
@@ -152,7 +152,7 @@ GIT_AUTHOR_NAME='管理员 <img src=x onerror=alert(1)>' git commit --author='�
 → author=管理员 <admin@x>     ← 无任何校验
 ```
 
-Immutalk 用 **Git 原生 commit 签名**：
+ImmuLog 用 **Git 原生 commit 签名**：
 
 ```bash
 git config gpg.format ssh
@@ -176,9 +176,9 @@ git commit-tree -S <tree> -p <parent>     # 签名白送，零代码
 ```
 密钥轮换公告
 
-Immutalk-Kind: rotate
-Immutalk-Seq: 7
-Immutalk-Key: SHA256:新指纹
+ImmuLog-Kind: rotate
+ImmuLog-Seq: 7
+ImmuLog-Key: SHA256:新指纹
 ```
 
 同步方按一条规则校验整条链：
@@ -254,8 +254,8 @@ POST /api/commit
 git commit-tree ... <<EOF
 撤回请求
 
-Immutalk-Retracts: <目标 OID>
-Immutalk-Reason: 发错了
+ImmuLog-Retracts: <目标 OID>
+ImmuLog-Reason: 发错了
 EOF
 ```
 
@@ -285,7 +285,7 @@ EOF
 | 层 | 机制 | 拦住什么 |
 |---|---|---|
 | L1 | **本地见证锚**（`update-ref` 的 CAS + 本地记录） | 回滚、引用重写 |
-| L2 | **单调序号**（签名过的 `Immutalk-Seq`） | 回退到合法旧 commit |
+| L2 | **单调序号**（签名过的 `ImmuLog-Seq`） | 回退到合法旧 commit |
 | L3 | **回执链**（我的 commit 引用你的 OID） | 单方面删除（会留下悬挂引用） |
 | L4 | **快照 gossip + 外部锚定** | 分裂视图、全局重写 |
 
@@ -683,22 +683,28 @@ vendor 需要的文件（实测体积）：
 ## 9. 项目结构（一文件一职责）
 
 ```
-immutalk/
-├── go.mod                   module immutalk（零第三方依赖）
-├── main.go                  组装与生命周期（唯一知道全部依赖的地方）
+immulog/
+├── go.mod                   module immulog（零第三方依赖）
+├── main.go                  组装与生命周期                         [AGPL-3.0]
 ├── docs/DESIGN.md           本文档
-├── internal/
-│   ├── gitx/                ← 唯一允许出现 os/exec 的包
-│   │   ├── exec.go          子进程边界：stdin 注入、超时、错误归一
-│   │   ├── object.go        commit-tree / hash-object / cat-file
-│   │   └── ref.go           ref 的 CAS 读写与批量快照（for-each-ref）
-│   ├── feed/                ← 领域语义，不含 IO 细节
-│   │   ├── feed.go          发消息 / 读消息 / 撤回
-│   │   └── verify.go        验签、seq 单调、与本地见证比对
-│   └── web/                 ← 传输，不含领域逻辑
-│       ├── http.go          路由与处理器（net/http）
-│       └── sse.go           事件流广播（text/event-stream）
-└── web/                     ← 前端，//go:embed 整个目录
+├── core/                    ← 可被外部导入的库，Apache-2.0
+│   ├── gitx/                ← 全项目唯一允许出现 os/exec 的包
+│   │   ├── exec.go          子进程边界：stdin 注入、超时、错误归一、Init
+│   │   ├── object.go        commit-tree / hash-object / log / trailer 读取
+│   │   ├── ref.go           CAS 读写 / for-each-ref / is-ancestor / count
+│   │   └── transport.go     fetch / push（复用 git 自己的 transport）
+│   └── feed/                ← 领域语义，不含 IO 细节
+│       ├── feed.go          消息编解码 + 发送 / 撤回 / 历史
+│       ├── key.go           签名自检、密钥链条、轮换公告
+│       ├── verify.go        见证锚与引用重写检测
+│       ├── snapshot.go      快照摘要与分裂视图判定
+│       ├── sync.go          多源同步：隔离区 → 校验 → 快进
+│       └── anchor.go        锚定链与外部锚定接口
+├── internal/web/            ← 传输，不含领域逻辑                 [AGPL-3.0]
+│   ├── http.go              路由与处理器（net/http）
+│   ├── sse.go               事件流广播（text/event-stream）
+│   └── guard.go             后台循环：巡检 / 同步 / 锚定
+└── web/                     ← 前端，//go:embed 整个目录           [AGPL-3.0]
     ├── index.html           MD3 骨架
     ├── style.css            布局 / 形状语义 / motion / 字体
     └── app/
@@ -709,6 +715,10 @@ immutalk/
         ├── render.js        ← 唯一碰 document
         └── mock.js          演示数据源（?demo=1）
 ```
+
+**为什么 `core/` 不在 `internal/` 下**：Go 禁止导入 `internal/` 里的包。
+若要给 `core/` 一个 Apache-2.0 授权，它必须真的可被外部 `go get` ——
+否则授权只是装饰。见 `LICENSE`。
 
 **目录即架构约束**——同一条原则，镜像到两侧：
 
@@ -837,7 +847,7 @@ type Publisher interface {
 #### 阶段 4 抓到的两个真实漏洞
 
 1. **trailer 注入**：`reason` / 外部回执里有一个换行，就能凭空造出一行
-   `Immutalk-Seq: 999`；而 git 的 trailer 解析取**最后一次**出现 —— **伪造的会赢**。
+   `ImmuLog-Seq: 999`；而 git 的 trailer 解析取**最后一次**出现 —— **伪造的会赢**。
    修法是 `sanitizeValue`：trailer 值一律压成单行（正文仍保留换行）。
 2. **越权撤回**：原本任何 OID 都能作为撤回目标。现在要求目标必须是本机链尾的祖先，
    且 `IsAncestor` 的对象缺失路径要**失败即拒绝**（否则泄漏成 500）。

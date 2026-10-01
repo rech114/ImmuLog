@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // http.go —— 路由与处理器。只做协议适配，不含领域逻辑，不含传输细节。
 package web
 
@@ -11,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"immutalk/internal/feed"
-	"immutalk/internal/gitx"
+	"immulog/core/feed"
+	"immulog/core/gitx"
 )
 
 // 每页回放的条数。

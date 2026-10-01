@@ -58,9 +58,9 @@ async function waitHealthy(base, ms = 30000) {
 }
 
 export default async function e2e(browser, _base, c) {
-  const work = await mkdtemp(join(tmpdir(), 'immutalk-e2e-'));
+  const work = await mkdtemp(join(tmpdir(), 'immulog-e2e-'));
   const repo = join(work, 'repoDB');
-  const bin = join(work, 'immutalk');
+  const bin = join(work, 'immulog');
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   let proc;
@@ -83,7 +83,7 @@ export default async function e2e(browser, _base, c) {
 
     // ── 3) 起服务 ───────────────────────────────────────────────
     proc = spawn(bin, [], {
-      env: { ...GIT_ENV, IMMUTALK_REPO: repo, PORT: String(port) },
+      env: { ...GIT_ENV, IMMULOG_REPO: repo, PORT: String(port) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let serverLog = '';
@@ -142,11 +142,11 @@ export default async function e2e(browser, _base, c) {
     const ref = git(repo, 'for-each-ref', '--format=%(refname)', 'refs/feeds/');
     c.ok(ref === `refs/feeds/${health.feed}`, `消息落在 refs/feeds/<feed>（${ref}）`);
 
-    const logged = git(repo, 'log', '--format=%H%x1f%an%x1f%(trailers:key=Immutalk-Seq,valueonly)', ref);
+    const logged = git(repo, 'log', '--format=%H%x1f%an%x1f%(trailers:key=ImmuLog-Seq,valueonly)', ref);
     const [oid, author, seq] = logged.split('\x1f');
     c.ok(oid === afterSend.oid, 'DOM 上的 OID 与 git 里的对象一致');
     c.ok(author === 'alice', `作者取自 git 配置（${author}）`);
-    c.ok(seq.trim() === '1', `Immutalk-Seq trailer 写入正确（${JSON.stringify(seq)}）`);
+    c.ok(seq.trim() === '1', `ImmuLog-Seq trailer 写入正确（${JSON.stringify(seq)}）`);
 
     // bare 仓库里没有 index / worktree —— 证明写路径没用 `git commit`
     c.ok(git(repo, 'rev-parse', '--is-bare-repository') === 'true', '仓库是 bare（无 worktree、无 index）');
@@ -189,7 +189,7 @@ export default async function e2e(browser, _base, c) {
     const forged = execFileSync(
       'git',
       ['-C', repo, 'commit-tree', tree, '-p', parent],
-      { env: GIT_ENV, input: '被改写的历史\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n', encoding: 'utf8' },
+      { env: GIT_ENV, input: '被改写的历史\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n', encoding: 'utf8' },
     ).trim();
     git(repo, 'update-ref', ref, forged); // 攻击者：不使用 --force 也能强推本地 ref
 

@@ -1,4 +1,6 @@
-// Command immutalk 是一个把 Git 当作信任根的聊天服务。
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// Command immulog 是一个把 Git 当作信任根的聊天服务。
 //
 // 这个文件只负责组装与生命周期 —— 所有真实逻辑都在 internal/ 里。
 // 目录即架构约束：gitx 是唯一碰 os/exec 的包，web 是唯一碰 net/http 的包。
@@ -19,9 +21,9 @@ import (
 	"syscall"
 	"time"
 
-	"immutalk/internal/feed"
-	"immutalk/internal/gitx"
-	"immutalk/internal/web"
+	"immulog/core/feed"
+	"immulog/core/gitx"
+	"immulog/internal/web"
 )
 
 // 前端由二进制内嵌 —— 部署即一个文件，用户自建节点不需要 Node.js。
@@ -47,7 +49,7 @@ func run() error {
 	defer stop()
 
 	// 1) 仓库：bare、无 worktree、无 index —— 消息提交不落任何文件
-	dir := env("IMMUTALK_REPO", "./repoDB")
+	dir := env("IMMULOG_REPO", "./repoDB")
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 		if err := gitx.Init(ctx, dir); err != nil {
 			return err
@@ -89,9 +91,9 @@ func run() error {
 	}
 
 	// 4) 多源与外部锚定（都可选）
-	remotes := parseRemotes(os.Getenv("IMMUTALK_REMOTES"))
+	remotes := parseRemotes(os.Getenv("IMMULOG_REMOTES"))
 	var publisher feed.Publisher
-	if u := os.Getenv("IMMUTALK_ANCHOR_URL"); u != "" {
+	if u := os.Getenv("IMMULOG_ANCHOR_URL"); u != "" {
 		publisher = feed.HTTPPublisher{URL: u}
 	}
 
@@ -106,8 +108,8 @@ func run() error {
 		Publisher: publisher,
 	})
 	srv.Watch(ctx,
-		duration("IMMUTALK_SYNC_INTERVAL", web.SyncInterval),
-		duration("IMMUTALK_ANCHOR_INTERVAL", web.AnchorInterval))
+		duration("IMMULOG_SYNC_INTERVAL", web.SyncInterval),
+		duration("IMMULOG_ANCHOR_INTERVAL", web.AnchorInterval))
 
 	// 不设 WriteTimeout：SSE 是长连接，会被它掐断
 	s := &http.Server{
@@ -123,7 +125,7 @@ func run() error {
 		_ = s.Shutdown(shut)
 	}()
 
-	log.Info("Immutalk 就绪",
+	log.Info("ImmuLog 就绪",
 		"addr", s.Addr, "repo", dir, "feed", pub,
 		"signed", store.Signed(), "remotes", len(remotes), "anchor", publisher != nil)
 	if store.Signed() {
@@ -132,10 +134,10 @@ func run() error {
 		log.Warn("未配置 user.signingkey：消息不会被签名，身份可被冒名（见 DESIGN.md §4）")
 	}
 	if len(remotes) == 0 {
-		log.Warn("未配置 IMMUTALK_REMOTES：单节点模式，不会与任何对端同步")
+		log.Warn("未配置 IMMULOG_REMOTES：单节点模式，不会与任何对端同步")
 	}
 	if publisher == nil {
-		log.Warn("未配置 IMMUTALK_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定")
+		log.Warn("未配置 IMMULOG_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定")
 	}
 
 	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -144,7 +146,7 @@ func run() error {
 	return nil
 }
 
-// parseRemotes 解析 IMMUTALK_REMOTES。
+// parseRemotes 解析 IMMULOG_REMOTES。
 //
 // 支持两种写法：`url`（自动命名）与 `name=url`。
 // 名字只用于隔离区槽位，会经 FeedID 归一成 ref 安全的形式。

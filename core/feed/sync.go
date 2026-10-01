@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -5,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // Remote 是一个同步源。URL 走 git 自己的 transport（ssh / https / file / git）。

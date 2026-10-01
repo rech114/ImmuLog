@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package feed
 
 import (
@@ -10,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"immutalk/internal/gitx"
+	"immulog/core/gitx"
 )
 
 // ── 测试夹具 ──────────────────────────────────────────────────────
@@ -93,7 +95,7 @@ func TestEveryMessageHasParseableSeqTrailer(t *testing.T) {
 
 	// 各条消息的 seq 必须能被 git 原样读回：1,2,3,4
 	ref := FeedRef(s.Pub())
-	out := rawGit(t, dir, "log", "--format=%(trailers:key=Immutalk-Seq,valueonly)", ref)
+	out := rawGit(t, dir, "log", "--format=%(trailers:key=ImmuLog-Seq,valueonly)", ref)
 	var seqs []string
 	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
 		if v := strings.TrimSpace(l); v != "" {
@@ -133,7 +135,7 @@ func TestHistoryIsNewestFirstAndBodyIsClean(t *testing.T) {
 	}
 	// trailer 块必须被剥掉，正文里不能残留元数据
 	for _, m := range got {
-		if strings.Contains(m.Body, "Immutalk-") {
+		if strings.Contains(m.Body, "ImmuLog-") {
 			t.Errorf("正文残留 trailer：%q", m.Body)
 		}
 		if m.Kind != KindMsg {
@@ -156,7 +158,7 @@ func TestMultiLineBodyRoundTrips(t *testing.T) {
 // 正文里伪造同名 trailer 不得生效 —— git 的 trailer 解析取最后一次出现。
 func TestFakeTrailersInBodyAreInert(t *testing.T) {
 	s, _ := newStore(t)
-	m := mustSend(t, s, "正文\n\nImmutalk-Seq: 999\nImmutalk-Retracts: "+strings.Repeat("f", 40))
+	m := mustSend(t, s, "正文\n\nImmuLog-Seq: 999\nImmuLog-Retracts: "+strings.Repeat("f", 40))
 
 	got, _ := s.History(context.Background(), 1)
 	if got[0].Seq != 1 {
@@ -165,7 +167,7 @@ func TestFakeTrailersInBodyAreInert(t *testing.T) {
 	if got[0].Kind != KindMsg {
 		t.Fatalf("注入的 Retracts 改变了 Kind：%q", got[0].Kind)
 	}
-	if !strings.Contains(got[0].Body, "Immutalk-Seq: 999") {
+	if !strings.Contains(got[0].Body, "ImmuLog-Seq: 999") {
 		t.Errorf("正文应原样保留（只是不生效）：%q", got[0].Body)
 	}
 	_ = m
@@ -239,7 +241,7 @@ func TestRetractRejectsMalformedTarget(t *testing.T) {
 		strings.Repeat("z", 40),
 		strings.Repeat("a", 39),
 		strings.Repeat("a", 41),
-		"aaaa\nImmutalk-Seq: 999",
+		"aaaa\nImmuLog-Seq: 999",
 	} {
 		if _, err := s.Retract(context.Background(), bad, "x"); !errors.Is(err, ErrBadTarget) {
 			t.Fatalf("Retract(%q) 应返回 ErrBadTarget，得到 %v", bad, err)
@@ -276,7 +278,7 @@ func TestRetractReasonCannotInjectTrailers(t *testing.T) {
 	ctx := context.Background()
 	target := mustSend(t, s, "原消息")
 
-	nasty := "ok\nImmutalk-Seq: 999\nImmutalk-Retracts: " + strings.Repeat("f", 40) + "\n"
+	nasty := "ok\nImmuLog-Seq: 999\nImmuLog-Retracts: " + strings.Repeat("f", 40) + "\n"
 	if _, err := s.Retract(ctx, target.OID, nasty); err != nil {
 		t.Fatalf("Retract: %v", err)
 	}
@@ -327,7 +329,7 @@ func TestVerifyDetectsRewrite(t *testing.T) {
 	// 外部攻击者：从 a 的位置另起一条平行链，然后把 ref 强行指过去
 	parent := rawGit(t, dir, "rev-parse", b.OID+"^")
 	tree := rawGit(t, dir, "hash-object", "-w", "-t", "tree", "--stdin")
-	forged := rawGitIn(t, dir, "被改写的历史\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n",
+	forged := rawGitIn(t, dir, "被改写的历史\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n",
 		"commit-tree", tree, "-p", parent)
 	if forged == b.OID {
 		t.Fatal("前置条件：伪造的提交应是一个不同的对象")

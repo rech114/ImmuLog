@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // sse.go —— SSE 传输层。纯管道：不懂消息语义，只负责把 Event 写到线上。
 //
 // 用 text/event-stream 而不是 WebSocket 的三个理由（docs/DESIGN.md §7.10）：

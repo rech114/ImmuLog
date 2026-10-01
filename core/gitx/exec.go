@@ -1,4 +1,6 @@
-// Package gitx 是 Immutalk 与 git 二进制的唯一边界。
+// SPDX-License-Identifier: Apache-2.0
+
+// Package gitx 是 ImmuLog 与 git 二进制的唯一边界。
 //
 // 全项目只有这个包允许出现 os/exec。其他任何地方出现 exec.Command 都算设计缺陷。
 // 好处：换语言 / 换 libgit2 / 加缓存层，全部只动这个包。
@@ -131,7 +133,7 @@ func (r *Repo) Config(ctx context.Context, key string) (string, error) {
 	return strings.TrimSpace(lines[0]), nil
 }
 
-// Identity 返回仓库的身份。Immutalk 的作者身份只来自这里，永远不来自请求体。
+// Identity 返回仓库的身份。ImmuLog 的作者身份只来自这里，永远不来自请求体。
 func (r *Repo) Identity(ctx context.Context) (name, email string, err error) {
 	name, err = r.Config(ctx, "user.name")
 	if err != nil {

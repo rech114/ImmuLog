@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 // render.js —— 唯一碰 document 的地方。
 // 只做三件事：追加、标记撤回、插入告警。没有 diff，因为 append-only 不需要 diff。
 

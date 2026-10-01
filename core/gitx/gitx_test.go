@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package gitx
 
 import (
@@ -94,7 +96,7 @@ func TestCommitTreeNeedsNoIndexNorWorktree(t *testing.T) {
 		t.Fatal("前置条件：应为 bare")
 	}
 
-	oid, err := r.Commit(ctx, tree(t, r), "", "第一条\n\nImmutalk-Seq: 1\n", false)
+	oid, err := r.Commit(ctx, tree(t, r), "", "第一条\n\nImmuLog-Seq: 1\n", false)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestLogParsesTrailersAndBody(t *testing.T) {
 	ctx := context.Background()
 
 	body := "正文第一行\n正文第二行"
-	oid, err := r.Commit(ctx, tree(t, r), "", body+"\n\nImmutalk-Kind: msg\nImmutalk-Seq: 7\n", false)
+	oid, err := r.Commit(ctx, tree(t, r), "", body+"\n\nImmuLog-Kind: msg\nImmuLog-Seq: 7\n", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +145,8 @@ func TestLogSurvivesAdversarialBody(t *testing.T) {
 	ctx := context.Background()
 
 	// \x1e 是记录分隔、\x1f 是字段分隔，都是合法字节 —— 必须扛住
-	evil := "a\x1eb\x1fc\n\nImmutalk-Seq: 999\n"
-	oid, err := r.Commit(ctx, tree(t, r), "", evil+"\n\nImmutalk-Kind: msg\nImmutalk-Seq: 2\n", false)
+	evil := "a\x1eb\x1fc\n\nImmuLog-Seq: 999\n"
+	oid, err := r.Commit(ctx, tree(t, r), "", evil+"\n\nImmuLog-Kind: msg\nImmuLog-Seq: 2\n", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +170,7 @@ func TestLogSurvivesAdversarialBody(t *testing.T) {
 // NUL 不由我们防 —— git 自己就拒绝。这里把这条保证固定下来当成回归护栏。
 func TestNulByteInMessageIsRejectedByGit(t *testing.T) {
 	r := newRepo(t)
-	_, err := r.Commit(context.Background(), tree(t, r), "", "a\x00b\n\nImmutalk-Seq: 1\n", false)
+	_, err := r.Commit(context.Background(), tree(t, r), "", "a\x00b\n\nImmuLog-Seq: 1\n", false)
 	if err == nil {
 		t.Fatal("git 应拒绝含 NUL 的 commit message")
 	}
@@ -197,7 +199,7 @@ func TestUpdateRefCAS(t *testing.T) {
 	tr := tree(t, r)
 
 	mk := func(msg string) string {
-		oid, err := r.Commit(ctx, tr, "", msg+"\n\nImmutalk-Seq: 1\n", false)
+		oid, err := r.Commit(ctx, tr, "", msg+"\n\nImmuLog-Seq: 1\n", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -243,9 +245,9 @@ func TestIsAncestor(t *testing.T) {
 	ctx := context.Background()
 	tr := tree(t, r)
 
-	root, _ := r.Commit(ctx, tr, "", "root\n\nImmutalk-Seq: 1\n", false)
-	child, _ := r.Commit(ctx, tr, root, "child\n\nImmutalk-Seq: 2\n", false)
-	side, _ := r.Commit(ctx, tr, root, "side\n\nImmutalk-Seq: 2\n", false)
+	root, _ := r.Commit(ctx, tr, "", "root\n\nImmuLog-Seq: 1\n", false)
+	child, _ := r.Commit(ctx, tr, root, "child\n\nImmuLog-Seq: 2\n", false)
+	side, _ := r.Commit(ctx, tr, root, "side\n\nImmuLog-Seq: 2\n", false)
 
 	if ok, _ := r.IsAncestor(ctx, root, child); !ok {
 		t.Error("root 应是 child 的祖先")
@@ -268,7 +270,7 @@ func TestRefsSnapshotInOneCall(t *testing.T) {
 	tr := tree(t, r)
 
 	for _, name := range []string{"a", "b", "c"} {
-		oid, err := r.Commit(ctx, tr, "", name+"\n\nImmutalk-Seq: 1\n", false)
+		oid, err := r.Commit(ctx, tr, "", name+"\n\nImmuLog-Seq: 1\n", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,7 +279,7 @@ func TestRefsSnapshotInOneCall(t *testing.T) {
 		}
 	}
 	// 干扰项：不在 feeds 命名空间内，必须被前缀过滤掉
-	w, _ := r.Commit(ctx, tr, "", "w\n\nImmutalk-Seq: 1\n", false)
+	w, _ := r.Commit(ctx, tr, "", "w\n\nImmuLog-Seq: 1\n", false)
 	if err := r.UpdateRef(ctx, "refs/witness/a", w, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +305,7 @@ func TestCount(t *testing.T) {
 
 	prev := ""
 	for i := 1; i <= 4; i++ {
-		oid, err := r.Commit(ctx, tr, prev, "m\n\nImmutalk-Seq: 1\n", false)
+		oid, err := r.Commit(ctx, tr, prev, "m\n\nImmuLog-Seq: 1\n", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -327,7 +329,7 @@ func TestCount(t *testing.T) {
 func TestArgumentInjectionIsInert(t *testing.T) {
 	r := newRepo(t)
 	nasty := "'; rm -rf / # `whoami` $(id) && | ; \n"
-	oid, err := r.Commit(context.Background(), tree(t, r), "", nasty+"\n\nImmutalk-Seq: 1\n", false)
+	oid, err := r.Commit(context.Background(), tree(t, r), "", nasty+"\n\nImmuLog-Seq: 1\n", false)
 	if err != nil {
 		t.Fatalf("含元字符的正文应被当作纯文本：%v", err)
 	}

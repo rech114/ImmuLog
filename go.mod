@@ -1,3 +1,3 @@
-module immutalk
+module immulog
 
 go 1.22

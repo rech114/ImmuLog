@@ -1,4 +1,4 @@
-# Immutalk
+# ImmuLog
 
 把 Git 当作信任根的聊天系统。**撤回可证明，而非不可删除。**
 
@@ -31,8 +31,8 @@
 ## 跑起来
 
 ```bash
-go build -o immutalk .
-./immutalk                      # 监听 :8081，仓库默认为 ./repoDB
+go build -o immulog .
+./immulog                      # 监听 :8081，仓库默认为 ./repoDB
 ```
 
 需要先在 git config 里有身份：
@@ -50,8 +50,8 @@ git config --global user.email "you@example.com"
 git config --global gpg.format ssh
 git config --global user.signingkey ~/.ssh/id_ed25519.pub
 # 让 git 能判定"这个签名有效、属于谁"（否则状态只是"密钥未知"）
-printf '%s %s\n' "you@example.com" "$(cat ~/.ssh/id_ed25519.pub)" > ~/.config/immutalk/allowed_signers
-git config --global gpg.ssh.allowedSignersFile ~/.config/immutalk/allowed_signers
+printf '%s %s\n' "you@example.com" "$(cat ~/.ssh/id_ed25519.pub)" > ~/.config/immulog/allowed_signers
+git config --global gpg.ssh.allowedSignersFile ~/.config/immulog/allowed_signers
 ```
 
 **配了密钥但签不出来时，服务会拒绝启动**，而不是悄悄发出没有签名的消息：
@@ -81,18 +81,18 @@ git config --global user.signingkey ~/.ssh/new_key.pub
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `IMMUTALK_REPO` | `./repoDB` | 仓库目录（自动 `git init --bare`） |
+| `IMMULOG_REPO` | `./repoDB` | 仓库目录（自动 `git init --bare`） |
 | `PORT` | `8081` | 监听端口 |
-| `IMMUTALK_REMOTES` | 空 | 同步源，逗号分隔。`url` 或 `name=url`，走 git 自己的 transport（ssh/https/file/git） |
-| `IMMUTALK_ANCHOR_URL` | 空 | 外部锚定服务。收到 `POST {snapshot, at}` 后把响应体当回执记进锚定链 |
-| `IMMUTALK_SYNC_INTERVAL` | `5s` | 同步间隔 |
-| `IMMUTALK_ANCHOR_INTERVAL` | `60s` | 锚定间隔 |
+| `IMMULOG_REMOTES` | 空 | 同步源，逗号分隔。`url` 或 `name=url`，走 git 自己的 transport（ssh/https/file/git） |
+| `IMMULOG_ANCHOR_URL` | 空 | 外部锚定服务。收到 `POST {snapshot, at}` 后把响应体当回执记进锚定链 |
+| `IMMULOG_SYNC_INTERVAL` | `5s` | 同步间隔 |
+| `IMMULOG_ANCHOR_INTERVAL` | `60s` | 锚定间隔 |
 
 两个「没配」都会在启动时**明确警告**，不假装安全：
 
 ```
-WARN 未配置 IMMUTALK_REMOTES：单节点模式，不会与任何对端同步
-WARN 未配置 IMMUTALK_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定
+WARN 未配置 IMMULOG_REMOTES：单节点模式，不会与任何对端同步
+WARN 未配置 IMMULOG_ANCHOR_URL：锚定只落在本机，不是真正的外部锚定
 ```
 
 ### 多节点示例
@@ -102,9 +102,9 @@ WARN 未配置 IMMUTALK_ANCHOR_URL：锚定只落在本机，不是真正的外�
 git init --bare /srv/chat.git
 
 # 节点 A
-IMMUTALK_REPO=./a IMMUTALK_REMOTES=hub=/srv/chat.git PORT=8081 ./immutalk
+IMMULOG_REPO=./a IMMULOG_REMOTES=hub=/srv/chat.git PORT=8081 ./immulog
 # 节点 B
-IMMUTALK_REPO=./b IMMUTALK_REMOTES=hub=/srv/chat.git PORT=8082 ./immutalk
+IMMULOG_REPO=./b IMMULOG_REMOTES=hub=/srv/chat.git PORT=8082 ./immulog
 ```
 
 每个节点把自己的 feed 推到中转站，并从**所有**中转站拉取、逐条校验、只允许快进。
@@ -142,34 +142,55 @@ git for-each-ref --format='%(refname)%1f%(objectname)' refs/feeds/
 ## 目录
 
 ```
-immutalk/
+immulog/
 ├── go.mod                  零第三方依赖（没有 go.sum）
-├── main.go                 组装与生命周期
+├── main.go                 组装与生命周期                    [AGPL-3.0]
 ├── docs/DESIGN.md
-├── internal/
-│   ├── gitx/               ← 唯一允许出现 os/exec 的包
+├── core/                   ← 可用作库，Apache-2.0
+│   ├── gitx/               唯一允许出现 os/exec 的包
 │   │   ├── exec.go         子进程边界：stdin 注入、超时、错误归一、Init
 │   │   ├── object.go       commit-tree / hash-object / log / trailer 读取
 │   │   ├── ref.go          CAS 读写 / for-each-ref / is-ancestor / count
 │   │   └── transport.go    fetch / push（复用 git 自己的 transport）
-│   ├── feed/               ← 领域语义
-│   │   ├── feed.go         消息编解码 + 发送 / 撤回 / 历史
-│   │   ├── verify.go       见证锚与引用重写检测
-│   │   ├── snapshot.go     快照摘要与分裂视图判定
-│   │   ├── sync.go         多源同步：隔离区 → 校验 → 快进
-│   │   └── anchor.go       锚定链与外部锚定接口
-│   └── web/                ← 传输
-│       ├── http.go         路由与处理器（net/http）
-│       ├── sse.go          EventSource 流（零依赖）
-│       └── guard.go        后台循环：巡检 / 同步 / 锚定
-└── web/                    前端，//go:embed
+│   └── feed/               领域语义：把 git 仓库变成可验证的消息日志
+│       ├── feed.go         消息编解码 + 发送 / 撤回 / 历史
+│       ├── key.go          签名自检、密钥链条、轮换公告
+│       ├── verify.go       见证锚与引用重写检测
+│       ├── snapshot.go     快照摘要与分裂视图判定
+│       ├── sync.go         多源同步：隔离区 → 校验 → 快进
+│       └── anchor.go       锚定链与外部锚定接口
+├── internal/web/           传输                            [AGPL-3.0]
+│   ├── http.go             路由与处理器（net/http）
+│   ├── sse.go              EventSource 流（零依赖）
+│   └── guard.go            后台循环：巡检 / 同步 / 锚定
+└── web/                    前端，//go:embed                [AGPL-3.0]
     ├── index.html
     ├── style.css
     └── app/                main / stream / api / store / render / mock
 ```
 
 > **架构约束：同一条原则镜像到两侧。**
-> 后端 `gitx` 是唯一能碰 `os/exec` 的包；前端 `stream` 是唯一能碰 `EventSource` 的文件。
+> 后端 `core/gitx` 是唯一能碰 `os/exec` 的包；前端 `stream` 是唯一能碰 `EventSource` 的文件。
+
+`core/` 刻意不在 `internal/` 下 —— Go 禁止导入 `internal/`，
+放在那里会让 Apache 授权变成一纸空文。
+
+---
+
+## 许可
+
+**分层许可**，每个源文件顶部的 `SPDX-License-Identifier` 是权威声明：
+
+| 目录 | 许可 | 为什么 |
+|---|---|---|
+| `core/` | **Apache-2.0** | 它是通用库：把 git 仓库变成可验证的消息日志。想让任何人都能**不用问**就用它 |
+| `main.go` · `internal/web/` · `web/` | **AGPL-3.0-or-later** | 跑起来的那部分。想让任何把它**当网络服务运营**的人保持开源 |
+
+⚠️ **一个不能说含糊的事实**：默认构建出的二进制同时链接了两半，
+所以**分发这个二进制 = 分发 AGPL-3.0 作品**。Apache 的部分只对
+「只想拿核心、不碰服务端」的第三方有意义 —— 而那恰好是最有价值的一种复用。
+
+贡献走 **DCO**（不是 CLA）：你保留版权，项目也无法重新授权。见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
@@ -210,8 +231,8 @@ error: unpack should have generated <sha>, but I can't find it!
 
 `GIT_TRACE` 显示失败发生在 receive-pack 的 **quarantine 迁移**：`unpack-objects`
 以 `GIT_OBJECT_DIRECTORY=.../tmp_objdir-incoming-XXXX` 写入对象，之后的存在性检查
-却找不到它。这是 proot + 该内核组合的问题，**与 Immutalk 无关** —— 上面那段
-复现里没有任何 Immutalk 代码。
+却找不到它。这是 proot + 该内核组合的问题，**与 ImmuLog 无关** —— 上面那段
+复现里没有任何 ImmuLog 代码。
 
 **影响范围**：仅限本机开发。CI 跑在 GitHub 的原生 x86_64 runner 上，push 正常执行。
 `internal/gitx` 的 push 测试在本机会以精确条件跳过（只认 "bad pack" 这一个症状），
